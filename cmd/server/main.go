@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 
 	"sentinel-go/server"
 )
@@ -26,7 +27,7 @@ func main() {
 	log.Printf("============================================")
 
 	// 2. 初始化 Token 池
-	pool := server.NewTokenPool(cfg.TokensFile)
+	pool := server.NewTokenPool(cfg.TokensFile, time.Duration(cfg.TokenRefreshAheadSec)*time.Second)
 	total, valid, _ := pool.Stats()
 	log.Printf("[startup] Token pool: total=%d, valid=%d", total, valid)
 

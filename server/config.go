@@ -29,6 +29,9 @@ type ServerConfig struct {
 	// 例如：http://192.168.1.10:5005 或 https://your.domain
 	// 若为空，则从请求的 Host / X-Forwarded-Proto 头自动推断
 	BaseURL string
+
+	// Session Token 自动刷新：在 AT 过期前多少秒提前用 ST 换 AT，默认 300
+	TokenRefreshAheadSec int
 }
 
 // LoadConfig 从环境变量加载配置
@@ -41,7 +44,8 @@ func LoadConfig() ServerConfig {
 		ImageDir:          getEnv("IMAGE_DIR", "images"),
 		TokensFile:        getEnv("TOKENS_FILE", "tokens.txt"),
 		SessionTTLMinutes: getEnvInt("SESSION_TTL_MINUTES", 120),
-		BaseURL:           getEnv("BASE_URL", ""),
+		BaseURL:              getEnv("BASE_URL", ""),
+		TokenRefreshAheadSec: getEnvInt("TOKEN_REFRESH_AHEAD_SEC", 300),
 	}
 }
 

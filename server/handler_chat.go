@@ -183,7 +183,7 @@ func (h *ChatHandler) handleStream(c *gin.Context, entry *sessionEntry, opts sen
 		writeChunk(contentChunk)
 	}
 
-	result, err := entry.client.ChatStream(opts, sentinel.StreamHandler(handler))
+	result, err := h.chatStreamWithRetry(c, entry, opts, sentinel.StreamHandler(handler))
 
 	if err != nil {
 		// 打印详细错误，方便排查 token 问题
@@ -299,7 +299,7 @@ func (h *ChatHandler) handleStream(c *gin.Context, entry *sessionEntry, opts sen
 
 // handleNonStream 非流式响应
 func (h *ChatHandler) handleNonStream(c *gin.Context, entry *sessionEntry, opts sentinel.ChatOptions, reqConvID, chatID, model string, created int64) {
-	result, err := entry.client.Chat(opts)
+	result, err := h.chatWithRetry(c, entry, opts)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, ErrorResponse{
 			Error: ErrorDetail{Message: err.Error(), Type: "server_error"},

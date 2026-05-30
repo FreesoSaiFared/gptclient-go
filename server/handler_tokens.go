@@ -49,27 +49,9 @@ func (h *TokensHandler) HandleUpload(c *gin.Context) {
 		return
 	}
 
-	var validLines []string
-	
-	// 1. 尝试在整个文本中搜索 JSON 中的 accessToken
-	matches := accessTokenRegex.FindAllStringSubmatch(body.Tokens, -1)
-	if len(matches) > 0 {
-		for _, m := range matches {
-			validLines = append(validLines, m[1])
-		}
-	} else {
-		// 2. 如果没有找到，按行分割并过滤明显的垃圾数据
-		lines := strings.Split(body.Tokens, "\n")
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") || strings.Contains(line, "{") || strings.Contains(line, "}") {
-				continue
-			}
-			validLines = append(validLines, line)
-		}
-	}
-
-	added := h.pool.Add(validLines...)
+	// 直接按行解析，parseTokenLine 内部已处理 JSON/AT/ST 各种格式
+	lines := strings.Split(body.Tokens, "\n")
+	added := h.pool.Add(lines...)
 
 	total, valid, _ := h.pool.Stats()
 	c.JSON(http.StatusOK, gin.H{

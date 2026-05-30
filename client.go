@@ -95,6 +95,12 @@ func (c *Client) SetTempMode(enabled bool) { c.tempMode = enabled }
 // SetDisableAutoImage 设置是否禁用自动图片下载（DLL 场景使用）
 func (c *Client) SetDisableAutoImage(disabled bool) { c.DisableAutoImage = disabled }
 
+// SetBearerToken 更新 Bearer Token（Session Token 刷新后调用）。
+func (c *Client) SetBearerToken(token string) {
+	c.bearerToken = token
+	c.httpClient.SetCommonHeader("Authorization", "Bearer "+token)
+}
+
 // SetConversationID 恢复到指定对话
 func (c *Client) SetConversationID(id string) { c.conversationID = id }
 

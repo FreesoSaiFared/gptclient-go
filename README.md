@@ -176,12 +176,15 @@ docker compose up -d
 | `GET  /tokens/errors` | 查看失效 Token 列表 |
 | `GET  /health` | 健康检查 |
 
-**`tokens.txt` 格式（每行一个，两种格式均支持）：**
+**`tokens.txt` 格式（每行一个）：**
 
 ```
-eyJhbGci...（纯 JWT，直接填）
-{"user":{...},"accessToken":"eyJhbGci..."}（从 /api/auth/session 复制的完整 JSON）
+eyJhbGci...                              # Access Token（JWT）
+st:你的__Secure-next-auth.session-token   # Session Token（推荐，自动续期 AT）
+{"user":{...},"accessToken":"eyJ..."}     # 从 /api/auth/session 复制的完整 JSON
 ```
+
+配置 `TOKEN_REFRESH_AHEAD_SEC`（默认 300）可在 AT 过期前提前用 ST 换新。池模式请求若遇 401 会自动尝试刷新一次。
 
 ### API 兼容性说明
 
