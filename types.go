@@ -50,6 +50,7 @@ type ChatResult struct {
 	imageAsyncTaskPending     int  // async-task-start 与 complete/end 计数
 	imageGenAsyncCompleteSeen    bool // 已收到 async-task-complete/end
 	imageGenConvAsyncStatusDone  bool // set-conversation-async-status（如 status=4）
+	imageGenConvStatusAt         int64 // 收到 conv async status=4 的时间（纳秒）
 	imageGenTurnDone             bool // turn topic WS 流已 [DONE]（仅诊断，不单独作为结束条件）
 }
 

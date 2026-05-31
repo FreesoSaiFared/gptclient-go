@@ -526,6 +526,8 @@ func (c *Client) handleSetConversationAsyncStatus(payload map[string]interface{}
 		result.imageGenAsyncCompleteSeen = true
 		result.imageAsyncTaskPending = 0
 		result.imageAsyncTaskActive = false
+		result.imageGenConvStatusAt = time.Now().UnixNano()
+		c.logf("[image-ws][async] 生图任务完成（async_status=4），将在本批 WS 处理结束后返回客户端")
 	}
 }
 
@@ -566,6 +568,19 @@ func (c *Client) processConvUpdatePayload(payload map[string]interface{}, result
 		}
 		c.processConvUpdateMessage(msg, result, opts, handler, updateType)
 	}
+}
+
+// tryFinishImageGenWS 若已满足结束条件则收尾并退出 WS 循环。
+func (c *Client) tryFinishImageGenWS(result *ChatResult, opts ChatOptions, waitStart time.Time, tag string) (bool, error) {
+	if result == nil || !result.CanImageGenIdleExit() {
+		return false, nil
+	}
+	c.FinishImageGenWS(result, opts)
+	c.logf("[image-ws] 生图收齐 %d 槽（%s 已等待 %ds pending=%d convStatus=%v）",
+		len(result.imageSlots), tag, int(time.Since(waitStart).Seconds()),
+		result.imageAsyncTaskPending, result.imageGenConvAsyncStatusDone)
+	c.logImageGenDiag(result, "exit_ok_"+tag)
+	return true, nil
 }
 
 // FinishImageGenWS 生图 WS 结束或 HTTP 收尾：定稿各槽位并刷新 ImageFileIDs。
@@ -699,14 +714,8 @@ func (c *Client) subscribeWSImageCombined(conn *websocket.Conn, turnTopicID, con
 			c.logf("[image-ws][async] 长期无 complete，已清除 stale pending（有图且 idle≥20s）")
 			c.logImageGenDiag(result, "stale_pending_cleared")
 		}
-		if result.CanImageGenIdleExit() {
-			idle := ImageGenIdleDuration(result)
-			c.FinishImageGenWS(result, opts)
-			c.logf("[image-ws] 生图收齐 %d 槽（idle %.0fs pending=%d complete=%v convStatus=%v）",
-				len(result.imageSlots), idle.Seconds(), result.imageAsyncTaskPending,
-				result.imageGenAsyncCompleteSeen, result.imageGenConvAsyncStatusDone)
-			c.logImageGenDiag(result, "exit_ok")
-			return nil
+		if done, err := c.tryFinishImageGenWS(result, opts, waitStart, "loop_top"); done {
+			return err
 		}
 		if time.Since(lastProgress) >= 15*time.Second {
 			c.logf("[image-ws] 等待生图中... 已等待 %ds | %s",
@@ -721,7 +730,11 @@ func (c *Client) subscribeWSImageCombined(conn *websocket.Conn, turnTopicID, con
 		if err != nil {
 			return fmt.Errorf("ws read: %w", err)
 		}
-		conn.SetReadDeadline(time.Now().Add(readDeadlineExt))
+		readWait := readDeadlineExt
+		if result.imageGenConvAsyncStatusDone || result.imageGenAsyncCompleteSeen {
+			readWait = 5 * time.Second
+		}
+		conn.SetReadDeadline(time.Now().Add(readWait))
 
 		frames := parseWSFrames(raw)
 		c.logAndRecordWSFrames(raw, frames)
@@ -771,6 +784,9 @@ func (c *Client) subscribeWSImageCombined(conn *websocket.Conn, turnTopicID, con
 			}
 		}
 		c.MergeApplyAndEmitArtifacts(result, opts)
+		if done, err := c.tryFinishImageGenWS(result, opts, waitStart, "after_frames"); done {
+			return err
+		}
 	}
 }
 
@@ -926,20 +942,24 @@ func (c *Client) subscribeWSConvUpdate(conn *websocket.Conn, conversationID stri
 	conn.SetReadDeadline(time.Now().Add(readDeadlineExt))
 	defer conn.SetReadDeadline(time.Time{})
 
+	waitStart := time.Now()
 	for {
 		if time.Now().After(deadline) {
 			return fmt.Errorf("超过最大等待时间 %.0f 分钟，图片未返回", totalTimeout.Minutes())
 		}
-		if result.CanImageGenIdleExit() {
-			c.FinishImageGenWS(result, opts)
-			return nil
+		if done, err := c.tryFinishImageGenWS(result, opts, waitStart, "conv_loop_top"); done {
+			return err
 		}
 
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("ws read: %w", err)
 		}
-		conn.SetReadDeadline(time.Now().Add(readDeadlineExt))
+		readWait := readDeadlineExt
+		if result.imageGenConvAsyncStatusDone || result.imageGenAsyncCompleteSeen {
+			readWait = 5 * time.Second
+		}
+		conn.SetReadDeadline(time.Now().Add(readWait))
 
 		for _, frame := range parseWSFrames(raw) {
 			if fType, _ := frame["type"].(string); fType != "conversation-update" {
@@ -955,6 +975,9 @@ func (c *Client) subscribeWSConvUpdate(conn *websocket.Conn, conversationID stri
 			c.processConvUpdatePayload(payload, result, opts, handler)
 		}
 		c.MergeApplyAndEmitArtifacts(result, opts)
+		if done, err := c.tryFinishImageGenWS(result, opts, waitStart, "conv_after_frames"); done {
+			return err
+		}
 	}
 }
 
