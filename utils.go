@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// GenerateUUID 生成 v4 UUID
+// GenerateUUID generates a v4 UUID.
 func GenerateUUID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
@@ -19,13 +19,13 @@ func GenerateUUID() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// encodeBase64JSON 将值 JSON 序列化后 Base64 编码（对应 JS 的 O0 函数）
+// encodeBase64JSON JSON-encodes a value and then Base64-encodes it (corresponds to JS O0 function).
 func encodeBase64JSON(v interface{}) string {
 	data, _ := json.Marshal(v)
 	return base64.StdEncoding.EncodeToString(data)
 }
 
-// fnvHash 对应 JS 的 rEe 函数：FNV-1a 变体散列
+// fnvHash corresponds to JS rEe function: FNV-1a variant hash.
 func fnvHash(s string) string {
 	var h uint32 = 2166136261
 	for i := 0; i < len(s); i++ {
@@ -40,7 +40,7 @@ func fnvHash(s string) string {
 	return fmt.Sprintf("%08x", h)
 }
 
-// buildCfg 构造指纹配置数组（对应 JS 的 buildCfg）
+// buildCfg constructs the fingerprint configuration array (corresponds to JS buildCfg).
 func buildCfg(ua, buildHash, lang, sid string, t0 int64, perfNow float64) []interface{} {
 	return []interface{}{
 		3000,
@@ -65,7 +65,7 @@ func buildCfg(ua, buildHash, lang, sid string, t0 int64, perfNow float64) []inte
 	}
 }
 
-// jsDateString 模拟 JavaScript Date.toString() 的输出格式
+// jsDateString simulates JavaScript Date.toString() output format.
 func jsDateString(t time.Time) string {
 	days := [...]string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
 	months := [...]string{"Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -109,7 +109,7 @@ func orDefault(val, def string) string {
 	return def
 }
 
-// getNestedString 从嵌套 map 中按路径取 string 值
+// getNestedString retrieves a string value from a nested map by key path.
 func getNestedString(m map[string]interface{}, keys ...string) string {
 	current := m
 	for i, key := range keys {
@@ -126,7 +126,7 @@ func getNestedString(m map[string]interface{}, keys ...string) string {
 	return ""
 }
 
-// getFirstStringPart 从 message 的 content.parts[0] 取字符串
+// getFirstStringPart retrieves content.parts[0] as a string from a message map.
 func getFirstStringPart(msg map[string]interface{}) string {
 	content, ok := msg["content"].(map[string]interface{})
 	if !ok {

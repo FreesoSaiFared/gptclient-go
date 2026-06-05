@@ -8,9 +8,9 @@ import (
 	"time"
 )
 
-// PollAndDownloadImage 轮询对话详情并下载 DALL-E 生成的图片
+// PollAndDownloadImage polls conversation details and downloads DALL-E generated images.
 func (c *Client) PollAndDownloadImage(conversationID string) (string, error) {
-	c.logf("[image] 等待图片生成...")
+	c.logf("[image] Waiting for image generation...")
 	const maxAttempts = 30
 
 	for i := 0; i < maxAttempts; i++ {
@@ -22,8 +22,8 @@ func (c *Client) PollAndDownloadImage(conversationID string) (string, error) {
 
 		resp, err := c.httpClient.R().
 			SetHeaders(map[string]string{
-				"Accept":       "*/*",
-				"Content-Type": "application/json",
+				"Accept":                "*/*",
+				"Content-Type":          "application/json",
 				"x-openai-target-path":  fmt.Sprintf("/backend-api/conversation/%s", conversationID),
 				"x-openai-target-route": "/backend-api/conversation/{conversationId}",
 			}).
@@ -90,16 +90,16 @@ func (c *Client) PollAndDownloadImage(conversationID string) (string, error) {
 		}
 	}
 
-	c.logf("[image] 超时，未能获取图片")
+	c.logf("[image] Timed out, unable to get image")
 	return "", fmt.Errorf("image download timeout")
 }
 
-// DownloadImageByFileID 直接用已知 file_id 下载图片（从 WebSocket asset_pointer 提取）
+// DownloadImageByFileID downloads an image using a known file_id (extracted from WebSocket asset_pointer).
 func (c *Client) DownloadImageByFileID(fileID, conversationID string) (string, error) {
 	return c.downloadImage(fileID, conversationID)
 }
 
-// downloadImage 通过 file_id 下载图片并保存到本地
+// downloadImage downloads an image via file_id and saves it locally.
 func (c *Client) downloadImage(fileID, conversationID string) (string, error) {
 	if err := os.MkdirAll(c.imageDir, 0755); err != nil {
 		return "", err
@@ -111,8 +111,8 @@ func (c *Client) downloadImage(fileID, conversationID string) (string, error) {
 	apiPath := fmt.Sprintf("/backend-api/files/download/%s?conversation_id=%s&inline=false", fileID, conversationID)
 	resp, err := c.httpClient.R().
 		SetHeaders(map[string]string{
-			"Accept":       "*/*",
-			"Content-Type": "application/json",
+			"Accept":                "*/*",
+			"Content-Type":          "application/json",
 			"x-openai-target-path":  apiPath,
 			"x-openai-target-route": "/backend-api/files/download/{fileId}",
 		}).
@@ -128,7 +128,7 @@ func (c *Client) downloadImage(fileID, conversationID string) (string, error) {
 		return "", fmt.Errorf("no download_url in response")
 	}
 
-	c.logf("[image] 找到图片: %s", fileID)
+	c.logf("[image] Found image: %s", fileID)
 
 	imgResp, err := c.httpClient.R().Get(dr.DownloadURL)
 	if err != nil {
@@ -144,6 +144,6 @@ func (c *Client) downloadImage(fileID, conversationID string) (string, error) {
 		return "", fmt.Errorf("save image: %w", err)
 	}
 
-	c.logf("[image] 已保存: %s (%d KB)", fpath, len(imgData)/1024)
+	c.logf("[image] Saved: %s (%d KB)", fpath, len(imgData)/1024)
 	return fpath, nil
 }

@@ -1,212 +1,484 @@
 # sentinel-go
 
-> 用 Go 语言逆向实现的 ChatGPT Web 端非官方客户端库，无需 OpenAI API Key，直接使用浏览器 Bearer Token 与 ChatGPT 对话。
+> A Go reverse-engineered ChatGPT web client library. Uses browser Bearer Token to interact with ChatGPT directly — no OpenAI API key required.
 
 ---
 
-## 特性
+## Features
 
-- ✅ 完整实现 ChatGPT Web 端 Sentinel 认证流程（conduit token + PoW + sentinel token）
-- ✅ 支持 SSE 流式输出（实时回调增量文本）
-- ✅ 支持多轮对话（自动维护 conversation_id / parent_message_id）
-- ✅ 支持 DALL-E 图片生成并自动下载到本地
-- ✅ 支持临时模式（不保存对话历史 / 不更新记忆）
-- ✅ 浏览器指纹伪装（TLS 指纹 + Chrome UA + sec-ch-ua 全套 Headers）
-- ✅ 开箱即用的交互式 CLI（REPL）
+- Full ChatGPT web Sentinel authentication flow (conduit token + PoW + sentinel token)
+- SSE streaming output (real-time incremental text callback)
+- Multi-turn conversation support (auto-maintains conversation_id / parent_message_id)
+- DALL-E image generation with auto-download
+- Temporary mode (don't save conversation history / don't update memory)
+- Browser fingerprint impersonation (TLS fingerprint + Chrome UA + full sec-ch-ua headers)
+- Ready-to-use interactive CLI (REPL)
+- OpenAI-compatible HTTP server (`POST /v1/chat/completions`)
 
 ---
 
-## 快速开始
+## Quick Start
 
-### 1. 克隆项目
+### 1. Clone the project
 
 ```bash
 git clone https://github.com/yourname/sentinel-go.git
 cd sentinel-go
 ```
 
-### 2. 获取 Bearer Token
+### 2. Install dependencies
 
-1. 打开浏览器，登录 [https://chatgpt.com](https://chatgpt.com)
-2. 按 `F12` 打开开发者工具 → Network 面板
-3. 随便发一条消息，过滤请求找到 `/backend-api/conversation`
-4. 在请求 Headers 中找到 `Authorization: Bearer eyJ...`，复制 `Bearer ` 后面的完整 JWT
+```bash
+go mod tidy
+```
 
-> ⚠️ Token 有效期约 **10 天**，过期后需重新获取。
+### 3. Get a Bearer Token
 
-### 3. 配置凭证
+1. Open a browser and log in to [https://chatgpt.com](https://chatgpt.com)
+2. Press `F12` to open Developer Tools → Network tab
+3. Send any message, filter requests to find `/backend-api/conversation`
+4. In the request headers, find `Authorization: Bearer eyJ...` and copy the full JWT after `Bearer `
 
-编辑项目根目录的 `config.json`：
+> ⚠️ Token validity is approximately **10 days**. You'll need to re-obtain it after expiry.
+
+### 4. Configure credentials
+
+Copy the example config and edit it:
+
+```bash
+cp config.example.json config.json
+```
+
+Edit `config.json`:
 
 ```json
 {
-  "bearerToken": "eyJhbGciOi...（你的 JWT Token）",
+  "bearerToken": "eyJhbGciOi...your JWT Token here...",
   "cookieString": ""
 }
 ```
 
-### 4. 运行
+Or with automatic cookie extraction:
+
+```json
+{
+  "bearerToken": "REPLACE_WITH_JWT",
+  "cookieString": "",
+  "cookies": {
+    "enabled": true,
+    "browser": "chrome",
+    "profile": "Default",
+    "domain": "chatgpt.com",
+    "keyring": "auto"
+  }
+}
+```
+
+> ⚠️ **NEVER commit `config.json` to a public repository.** It contains your personal Bearer Token and cookies. The file is already listed in `.gitignore`.
+
+### 5. Run
 
 ```bash
-# 交互式多轮对话（REPL 模式）
-go run ./cmd/chat/
+# One-command startup — auto-detects browser cookies, refreshes token, starts server
+go run ./cmd/start
 
-# 单次问答
-go run ./cmd/chat/ "你好，介绍一下自己"
+# Interactive multi-turn conversation (REPL mode)
+go run ./cmd/chat -config config.json
 
-# 指定模型
-go run ./cmd/chat/ -model gpt-4o-mini "帮我写一段 Go 代码"
+# One-shot question
+go run ./cmd/chat -config config.json "Hello, introduce yourself"
 
-# 临时模式（不保存历史）
-go run ./cmd/chat/ -temp
+# Specify a model
+go run ./cmd/chat -config config.json -model gpt-5-5-thinking "Write some Go code"
+
+# Temporary mode (don't save history)
+go run ./cmd/chat -config config.json -temp
+
+# OpenAI-compatible server
+go run ./cmd/server -config config.json -addr :7777
+
+# Server with custom base URL (for testing)
+go run ./cmd/server -config config.json -addr :7777 -base-url http://localhost:9999
 ```
 
 ---
 
-## CLI 参数
+## CLI Flags
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `-config` | `config.json` | 配置文件路径 |
-| `-model` | `gpt-5-4-thinking` | 使用的模型名称 |
-| `-temp` | `false` | 开启临时模式（不保存对话历史） |
+### Chat CLI (`cmd/chat`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-config` | `config.json` | Config file path |
+| `-model` | `gpt-5-5-thinking` | Model name |
+| `-temp` | `false` | Enable temporary mode (don't save history) |
+| `-base-url` | `""` | Backend base URL (empty defaults to `https://chatgpt.com`) |
+| `-cookie-file` | `""` | Netscape cookies.txt file path (overrides config) |
+| `-browser` | `""` | Browser to extract cookies from (overrides config) |
+| `-profile` | `""` | Browser profile name or path (overrides config) |
+| `-cookie-domain` | `""` | Domain to filter cookies for (default chatgpt.com) |
+| `-print-cookie-status` | `false` | Print cookie resolution status |
+
+### Server (`cmd/server`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-config` | `config.json` | Config file path |
+| `-addr` | `:7777` | Listen address |
+| `-model` | `""` | Default model (empty uses request model or `gpt-5-5-thinking` fallback) |
+| `-base-url` | `""` | Backend base URL (empty defaults to `https://chatgpt.com`) |
+
+### Cookie Utility (`cmd/cookies`)
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-config` | `config.json` | Config file path (for `-write`) |
+| `-browser` | `""` | Browser to extract cookies from |
+| `-profile` | `""` | Browser profile name or path |
+| `-cookie-file` | `""` | Netscape cookies.txt file path |
+| `-domain` | `chatgpt.com` | Domain to filter cookies for |
+| `-print` | `false` | Print redacted cookie status summary |
+| `-write` | `false` | Write resolved cookie string to config file |
+
+### Start (`cmd/start`)
+
+One-command launcher with auto-detection and interactive browser selection.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-config` | `config.json` | Config file path |
+| `-addr` | `:7777` | Listen address |
+| `-model` | `gpt-5-5-thinking` | Default model |
+
+The start command will:
+1. Check if the current bearer token is valid
+2. If not, probe all installed browsers for chatgpt.com cookies
+3. Display a table with cookie counts, keyring status, and account info
+4. Let you select which browser to use
+5. Auto-refresh the access token and save config
+6. Start the OpenAI-compatible server
 
 ---
 
-## REPL 交互命令
+## REPL Commands
 
-进入交互模式后，可使用以下内置命令：
+When in interactive mode, these built-in commands are available:
 
-| 命令 | 说明 |
-|------|------|
-| `/new` | 开启新对话，清空上下文 |
-| `/model <name>` | 切换模型（不传参数则显示当前模型及可选列表） |
-| `/temp` | 切换临时模式开/关 |
-| `/info` | 查看当前会话详情（conversation_id、model、轮次等） |
-| `/exit` 或 `/quit` | 退出程序 |
+| Command | Description |
+|---------|-------------|
+| `/new` | Start a new conversation, clear context |
+| `/model <name>` | Switch model (no argument shows current model and options) |
+| `/temp` | Toggle temporary mode on/off |
+| `/info` | View current session details (conversation_id, model, turn count, etc.) |
+| `/exit` or `/quit` | Exit the program |
 
-**可选模型参考：**
+**Available models:**
 
 ```
-gpt-4o
-gpt-4o-mini
 gpt-5-5-thinking
+gpt-5-5
 o4-mini-high
 ```
 
 ---
 
-## 作为库使用
+## OpenAI-Compatible Server
+
+The server exposes a single endpoint compatible with the OpenAI chat completions API:
+
+```
+POST /v1/chat/completions
+```
+
+### Curl example
+
+```bash
+curl -X POST http://localhost:7777/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-dummy" \
+  -d '{
+    "model": "gpt-5-5-thinking",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": false
+  }'
+```
+
+### Streaming example
+
+```bash
+curl -X POST http://localhost:7777/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-dummy" \
+  -d '{
+    "model": "gpt-5-5-thinking",
+    "messages": [{"role": "user", "content": "Tell me a story"}],
+    "stream": true
+  }'
+```
+
+### Auth behavior
+
+- If the request includes `Authorization: Bearer <token>`, that token is used.
+- If the token is empty, `sk-dummy`, or `sk-sentinel-local`, the server falls back to the `bearerToken` in `config.json`.
+- If no valid token is found, the server returns `401 Unauthorized`.
+
+### Important notes
+
+- The server operates in **last-message proxy mode**: all messages are assembled into a prompt string, but only the combined text is sent to ChatGPT. Full OpenAI chat semantics (system messages, multi-message context) are not preserved end-to-end.
+- A new `Client` is created per request, so **conversation state is not preserved** across requests.
+- Auto-image download is disabled on the server (`DisableAutoImage = true`).
+
+---
+
+## Testing
+
+All tests use a **fake local backend** — no real ChatGPT credentials or network access required.
+
+```bash
+# Run all tests
+go test ./...
+
+# Run with verbose output
+go test -v ./...
+
+# Run only unit tests
+go test -v -run "Test(RuneSlice|OrDefault|TruncateStr|NewClient|ProcessDelta)" ./...
+
+# Run only integration tests
+go test -v -run "TestIntegration" ./...
+```
+
+### Test categories
+
+| File | Description |
+|------|-------------|
+| `utils_test.go` | Unit tests for utility functions |
+| `client_test.go` | Unit tests for Client creation and configuration |
+| `chat_sse_test.go` | Unit tests for SSE/WS message processing |
+| `cookies_test.go` | Unit tests for cookie loading, extraction, and decryption |
+| `integration_fake_backend_test.go` | Integration test with fake HTTP/WS backend |
+| `cmd/server/main_test.go` | Server endpoint tests against `newHandler` |
+
+---
+
+## Cookie Configuration
+
+The `bearerToken` is still required for authentication. Cookies are additional context that may improve compatibility or bypass certain restrictions.
+
+### Resolution order
+
+1. If `cookieString` is non-empty in config, use it exactly as provided.
+2. Else if `cookies.enabled` is `true` and `cookies.file` is set, load a Netscape cookies.txt file.
+3. Else if `cookies.enabled` is `true` and `cookies.browser` is set, extract browser cookies.
+4. Else use an empty cookie string.
+
+### Manual cookie string
+
+Set `cookieString` in `config.json` to a semicolon-separated `name=value` string:
+
+```json
+{
+  "bearerToken": "eyJ...",
+  "cookieString": "cookie1=val1; cookie2=val2"
+}
+```
+
+### Netscape cookies.txt
+
+Export cookies from your browser using a browser extension (e.g., "Get cookies.txt LOCALLY") and point the config at the file:
+
+```json
+{
+  "bearerToken": "eyJ...",
+  "cookies": {
+    "enabled": true,
+    "file": "/path/to/cookies.txt",
+    "domain": "chatgpt.com"
+  }
+}
+```
+
+### Browser extraction
+
+The `cookies.browser` field extracts cookies directly from your browser's local profile. Supported browsers:
+
+- `chrome`, `chromium`, `brave`, `edge`, `opera`, `vivaldi` (Chromium-based)
+- `firefox`
+
+Example:
+
+```json
+{
+  "bearerToken": "eyJ...",
+  "cookies": {
+    "enabled": true,
+    "browser": "chrome",
+    "profile": "Default",
+    "domain": "chatgpt.com"
+  }
+}
+```
+
+### Browser extraction caveats
+
+- **Linux-first**: Browser extraction is implemented for Linux. Cross-platform path mapping exists where simple, but Windows DPAPI and macOS Keychain are not implemented.
+- **Chromium v10 cookies**: AES-CBC encrypted cookies using the `peanuts` password and empty-password fallback are supported.
+- **Chromium v11 cookies**: These require OS keyring support and are **not supported**. The error message will suggest using `cookies.file` or `cookieString` instead.
+- **Firefox**: Reads `cookies.sqlite` from local profiles. Schema version 16+ (millisecond expiry) is handled.
+- If extraction is explicitly enabled (`cookies.enabled: true`) and fails, the application exits with a clear error. If cookies are not enabled, extraction failures are silently ignored.
+- **No real browser profiles are accessed in tests.**
+
+### Cookie utility command
+
+Use `cmd/cookies` to test or write cookie configuration:
+
+```bash
+# Print a redacted summary (no cookie values shown)
+go run ./cmd/cookies -browser chrome -profile Default -domain chatgpt.com -print
+
+# Extract from browser and write to config
+go run ./cmd/cookies -browser chrome -profile Default -domain chatgpt.com -config config.json -write
+
+# Load from a cookies.txt file and write to config
+go run ./cmd/cookies -cookie-file ./cookies.txt -domain chatgpt.com -config config.json -write
+```
+
+> ⚠️ No cookie values are ever printed. The `-print` flag only shows counts and byte sizes.
+
+---
+
+## Library Usage
 
 ```go
 import sentinel "sentinel-go"
 
 client := sentinel.NewClient(sentinel.Config{
     BearerToken: "eyJ...",
-    Model:       "gpt-4o",
+    Model:       "gpt-5-5-thinking",
     TempMode:    false,
 })
 
-// 非流式（等待完整回复）
-result, err := client.Chat("你好！")
+// Non-streaming (wait for complete reply)
+result, err := client.Chat("Hello!")
 fmt.Println(result.Text)
 
-// 流式（实时打印增量）
-result, err := client.ChatStream("讲个故事", func(delta string) {
+// Streaming (print increments in real time)
+result, err := client.ChatStream("Tell me a story", func(delta string) {
     fmt.Print(delta)
 })
 
-// 多轮对话（无需手动维护 ID，自动衔接）
-client.Chat("我叫张三")
-result, _ := client.Chat("我叫什么名字？") // → 张三
+// Multi-turn conversation (IDs are maintained automatically)
+client.Chat("My name is Alice")
+result, _ := client.Chat("What is my name?") // → Alice
 
-// 重置会话（开启新对话）
+// Reset session (start new conversation)
 client.ResetSession()
 
-// 切换模型
-client.SetModel("gpt-4o-mini")
+// Switch model
+client.SetModel("gpt-5-5-thinking")
 ```
 
-### Config 字段说明
+### Config Fields
 
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
 | `BearerToken` | string | ✅ | ChatGPT JWT Token |
-| `CookieString` | string | ❌ | 浏览器 Cookie（可选，增强兼容性） |
-| `Model` | string | ❌ | 模型名，默认 `gpt-5-4-thinking` |
-| `DeviceID` | string | ❌ | 设备 ID，留空自动生成 UUID |
-| `BuildHash` | string | ❌ | 客户端构建 Hash |
-| `BuildNumber` | string | ❌ | 客户端构建号 |
-| `UserAgent` | string | ❌ | User-Agent，默认模拟 Edge 146 |
-| `Language` | string | ❌ | 语言，默认 `zh-CN` |
-| `ImageDir` | string | ❌ | 图片下载目录，默认 `images/` |
-| `TempMode` | bool | ❌ | 临时模式，默认 `false` |
+| `CookieString` | string | ❌ | Browser cookie (optional, improves compatibility) |
+| `Model` | string | ❌ | Model name, default `gpt-5-5-thinking` |
+| `DeviceID` | string | ❌ | Device ID; auto-generates UUID if empty |
+| `BuildHash` | string | ❌ | Client build hash |
+| `BuildNumber` | string | ❌ | Client build number |
+| `UserAgent` | string | ❌ | User-Agent, defaults to Edge 146 |
+| `Language` | string | ❌ | Language, default `zh-CN` |
+| `ImageDir` | string | ❌ | Image download directory, default `images/` |
+| `TempMode` | bool | ❌ | Temporary mode, default `false` |
+| `BaseURL` | string | ❌ | Backend base URL, default `https://chatgpt.com` |
+| `DisableImpersonate` | bool | ❌ | Disable Chrome TLS fingerprint (for testing), default `false` |
 
-### ChatResult 字段说明
+### RuntimeConfig Fields (config.json)
 
-| 字段 | 说明 |
-|------|------|
-| `Text` | 助手完整回复文本 |
-| `ConversationID` | 对话 ID |
-| `LastAssistantMsgID` | 最后一条助手消息 ID（多轮衔接用） |
-| `ImageTaskID` | DALL-E 图片任务 ID（如有） |
-| `ImagePath` | 已下载图片的本地路径（如有） |
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `bearerToken` | string | ✅ | ChatGPT JWT Token |
+| `cookieString` | string | ❌ | Manual cookie string (highest priority) |
+| `cookies.enabled` | bool | ❌ | Enable automatic cookie extraction, default `false` |
+| `cookies.file` | string | ❌ | Path to Netscape cookies.txt file |
+| `cookies.browser` | string | ❌ | Browser name for extraction (chrome, firefox, etc.) |
+| `cookies.profile` | string | ❌ | Browser profile name or path |
+| `cookies.domain` | string | ❌ | Domain to filter cookies for, default `chatgpt.com` |
+| `cookies.keyring` | string | ❌ | Keyring backend, default `auto` |
+
+### ChatResult Fields
+
+| Field | Description |
+|-------|-------------|
+| `Text` | Full assistant reply text |
+| `ConversationID` | Conversation ID |
+| `LastAssistantMsgID` | Last assistant message ID (for multi-turn chaining) |
+| `ImageTaskID` | DALL-E image task ID (if any) |
+| `ImagePath` | Local path of downloaded image (if any) |
 
 ---
 
-## 项目结构
+## Project Structure
 
 ```
 sentinel-go/
-├── types.go          # 公开类型定义
-├── client.go         # Client 核心结构体 & HTTP 初始化
-├── auth.go           # Sentinel 三步认证流程
-├── chat.go           # 对话主流程 & SSE 事件解析
-├── image.go          # DALL-E 图片轮询 & 下载
-├── utils.go          # UUID、FNV Hash、浏览器指纹构造
-├── config.json       # 本地凭证配置（不要提交到 Git）
+├── types.go          # Public type definitions
+├── client.go         # Client core struct & HTTP initialization
+├── auth.go           # Sentinel three-step authentication flow
+├── chat.go           # Conversation flow & SSE event parsing
+├── cookies.go        # Cookie loading, browser extraction, decryption, and probing
+├── image.go          # DALL-E image polling & download
+├── utils.go          # UUID, FNV hash, browser fingerprint construction
+├── config.example.json  # Example configuration (safe to commit)
 ├── go.mod
 └── cmd/
-    └── chat/
-        └── main.go   # CLI 入口
+    ├── chat/
+    │   └── main.go   # CLI entry point
+    ├── cookies/
+    │   └── main.go   # Cookie configuration utility
+    ├── server/
+    │   └── main.go   # OpenAI-compatible HTTP server
+    └── start/
+        └── main.go   # One-command launcher with auto-detection
 ```
 
 ---
 
-## 认证流程说明
+## Authentication Flow
 
-每次发送消息前，会依次完成以下步骤：
+Before each message, the following steps are completed:
 
 ```
-1. POST /conversation/prepare      → 获取 conduit_token
-2. POST /sentinel/chat-requirements/prepare → 获取 PoW 挑战
-3. （若需要 PoW）暴力枚举 FNV-1a Hash 直到满足难度前缀
-4. POST /sentinel/chat-requirements/finalize → 获取 sentinel_token
-5. POST /backend-api/f/conversation (SSE)  → 流式获取回复
+1. POST /conversation/prepare      → Get conduit_token
+2. POST /sentinel/chat-requirements/prepare → Get PoW challenge
+3. (If PoW required) Brute-force FNV-1a hash until difficulty prefix is met
+4. POST /sentinel/chat-requirements/finalize → Get sentinel_token
+5. POST /backend-api/f/conversation (SSE)  → Stream reply
 ```
 
 ---
 
-## 依赖
+## Dependencies
 
-| 依赖 | 说明 |
-|------|------|
-| [imroc/req/v3](https://github.com/imroc/req) | HTTP 客户端，支持 Chrome TLS 指纹伪装 |
-| [refraction-networking/utls](https://github.com/refraction-networking/utls) | TLS 指纹库（间接依赖） |
-| [quic-go/quic-go](https://github.com/quic-go/quic-go) | HTTP/3 支持（间接依赖） |
+| Dependency | Description |
+|------------|-------------|
+| [imroc/req/v3](https://github.com/imroc/req) | HTTP client with Chrome TLS fingerprint impersonation |
+| [refraction-networking/utls](https://github.com/refraction-networking/utls) | TLS fingerprint library (indirect dependency) |
+| [quic-go/quic-go](https://github.com/quic-go/quic-go) | HTTP/3 support (indirect dependency) |
+| [gorilla/websocket](https://github.com/gorilla/websocket) | WebSocket client for streaming handoff |
+| [modernc.org/sqlite](https://modernc.org/sqlite/) | Pure-Go SQLite driver for browser cookie extraction |
 
 ---
 
-## 注意事项
+## Caveats
 
-- 本项目仅供学习与研究使用，请勿用于商业或违反 OpenAI 服务条款的场景
-- Bearer Token 是个人凭证，请勿泄露，**不要将 `config.json` 提交到公开仓库**
-- 建议在 `.gitignore` 中添加 `config.json`
-
-```gitignore
-config.json
-images/
-```
+- This project is for **learning and research only**. Do not use it in ways that violate OpenAI's Terms of Service.
+- Bearer Tokens are personal credentials. **Never share them** and **never commit `config.json` to a public repository**.
+- The server creates a new Client per HTTP request — multi-turn conversation state is **not preserved** across requests.
+- The server operates in **last-message proxy mode**: messages are combined into a single prompt string rather than being sent as a structured chat history.
+- `config.json` is already in `.gitignore` — make sure it stays that way.
 
 ---
 

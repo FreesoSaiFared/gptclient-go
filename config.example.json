@@ -1,0 +1,12 @@
+{
+  "bearerToken": "REPLACE_WITH_JWT",
+  "cookieString": "",
+  "cookies": {
+    "enabled": false,
+    "file": "",
+    "browser": "",
+    "profile": "",
+    "domain": "chatgpt.com",
+    "keyring": "auto"
+  }
+}

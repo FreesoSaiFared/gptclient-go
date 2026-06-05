@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// getConduitToken 获取 conduit_token（Step 1）
+// getConduitToken fetches a conduit_token (Step 1).
 func (c *Client) getConduitToken(model, turnTraceID, partialText string) (string, error) {
 	if partialText == "" {
 		partialText = "h"
@@ -16,12 +16,12 @@ func (c *Client) getConduitToken(model, turnTraceID, partialText string) (string
 	body := map[string]interface{}{
 		"action":                "next",
 		"fork_from_shared_post": false,
-		"parent_message_id":    "client-created-root",
-		"model":                model,
-		"timezone_offset_min":  -480,
-		"timezone":             "Asia/Shanghai",
-		"conversation_mode":    map[string]string{"kind": "primary_assistant"},
-		"system_hints":         []string{},
+		"parent_message_id":     "client-created-root",
+		"model":                 model,
+		"timezone_offset_min":   -480,
+		"timezone":              "Asia/Shanghai",
+		"conversation_mode":     map[string]string{"kind": "primary_assistant"},
+		"system_hints":          []string{},
 		"partial_query": map[string]interface{}{
 			"id":     GenerateUUID(),
 			"author": map[string]string{"role": "user"},
@@ -30,20 +30,20 @@ func (c *Client) getConduitToken(model, turnTraceID, partialText string) (string
 				"parts":        []string{partialText},
 			},
 		},
-		"supports_buffering":    true,
-		"supported_encodings":   []string{"v1"},
+		"supports_buffering":     true,
+		"supported_encodings":    []string{"v1"},
 		"client_contextual_info": map[string]interface{}{"app_name": "chatgpt.com"},
-		"thinking_effort":       "standard",
+		"thinking_effort":        "standard",
 	}
 
 	resp, err := c.httpClient.R().
 		SetHeaders(map[string]string{
-			"Accept":                 "*/*",
-			"Content-Type":           "application/json",
-			"x-conduit-token":        "no-token",
-			"x-oai-turn-trace-id":    turnTraceID,
-			"x-openai-target-path":   "/backend-api/f/conversation/prepare",
-			"x-openai-target-route":  "/backend-api/f/conversation/prepare",
+			"Accept":                "*/*",
+			"Content-Type":          "application/json",
+			"x-conduit-token":       "no-token",
+			"x-oai-turn-trace-id":   turnTraceID,
+			"x-openai-target-path":  "/backend-api/f/conversation/prepare",
+			"x-openai-target-route": "/backend-api/f/conversation/prepare",
 		}).
 		SetBody(body).
 		Post("/backend-api/f/conversation/prepare")
@@ -66,7 +66,7 @@ func (c *Client) getConduitToken(model, turnTraceID, partialText string) (string
 	return result.ConduitToken, nil
 }
 
-// getSentinelToken 获取 sentinel token（Step 2+3：prepare → PoW → finalize）
+// getSentinelToken fetches a sentinel token (Steps 2+3: prepare → PoW → finalize).
 func (c *Client) getSentinelToken() (sentinelToken, proofToken string, err error) {
 	sid := GenerateUUID()
 	t0 := time.Now().UnixMilli()

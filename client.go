@@ -15,7 +15,8 @@ const (
 	defaultModel       = "gpt-5-5-thinking"
 )
 
-// Client 是 ChatGPT 对话客户端，封装了完整的 Sentinel 认证 + SSE 对话流程。
+// Client is a ChatGPT conversation client that encapsulates the full
+// Sentinel authentication + SSE conversation flow.
 type Client struct {
 	httpClient  *req.Client
 	bearerToken string
@@ -35,15 +36,16 @@ type Client struct {
 	tempMode        bool
 	turnCount       int
 
-	// Logf 日志输出函数，设为 nil 可禁用日志。默认 log.Printf。
+	// Logf is the log output function; set to nil to disable logging. Defaults to log.Printf.
 	Logf LogFunc
 
-	// DisableAutoImage 设为 true 时，Chat/ChatStream 不会自动阻塞等待图片下载。
-	// 适合 DLL / 外部调用场景，由调用方自己异步处理图片下载。
+	// DisableAutoImage when true prevents Chat/ChatStream from blocking to wait for
+	// image downloads. Suitable for DLL/external call scenarios where the caller
+	// handles image downloading asynchronously.
 	DisableAutoImage bool
 }
 
-// NewClient 创建新的 ChatGPT 客户端
+// NewClient creates a new ChatGPT client.
 func NewClient(cfg Config) *Client {
 	c := &Client{
 		bearerToken:     cfg.BearerToken,
@@ -62,46 +64,55 @@ func NewClient(cfg Config) *Client {
 		Logf:            log.Printf,
 	}
 
+	baseURL := orDefault(cfg.BaseURL, "https://chatgpt.com")
+
 	httpC := req.C().
-		SetBaseURL("https://chatgpt.com").
-		SetCommonHeaders(c.commonHeaders()).
-		ImpersonateChrome()
+		SetBaseURL(baseURL).
+		SetCommonHeaders(c.commonHeaders())
+
+	if !cfg.DisableImpersonate {
+		httpC = httpC.ImpersonateChrome()
+	}
 
 	c.httpClient = httpC
 	return c
 }
 
-// HTTPClient 返回底层 req.Client 以便高级自定义
+// HTTPClient returns the underlying req.Client for advanced customization.
 func (c *Client) HTTPClient() *req.Client {
 	return c.httpClient
 }
 
-// ResetSession 重置对话上下文（开始新对话）
+// ResetSession resets the conversation context (starts a new conversation).
 func (c *Client) ResetSession() {
 	c.conversationID = ""
 	c.parentMessageID = "client-created-root"
 	c.turnCount = 0
 }
 
-// SetModel 切换模型
+// SetModel switches the model.
 func (c *Client) SetModel(model string) { c.model = model }
 
-// GetModel 获取当前模型
+// GetModel returns the current model.
 func (c *Client) GetModel() string { return c.model }
 
-// SetTempMode 设置临时模式
+// SetBearerToken updates the bearer token used for authentication.
+// This is useful for refreshing an expired token without creating a new Client.
+func (c *Client) SetBearerToken(token string) { c.bearerToken = token }
+
+// SetTempMode sets temporary mode.
 func (c *Client) SetTempMode(enabled bool) { c.tempMode = enabled }
 
-// SetDisableAutoImage 设置是否禁用自动图片下载（DLL 场景使用）
+// SetDisableAutoImage sets whether auto image downloading is disabled (for DLL use cases).
 func (c *Client) SetDisableAutoImage(disabled bool) { c.DisableAutoImage = disabled }
 
-// SetConversationID 恢复到指定对话
+// SetConversationID restores to a specific conversation.
 func (c *Client) SetConversationID(id string) { c.conversationID = id }
 
-// SetParentMessageID 设置父消息 ID（用于指定回复位置）
+// SetParentMessageID sets the parent message ID (to specify reply position).
 func (c *Client) SetParentMessageID(id string) { c.parentMessageID = id }
 
-// GetSessionInfo 获取当前会话状态
+// GetSessionInfo returns the current session state.
 func (c *Client) GetSessionInfo() SessionInfo {
 	return SessionInfo{
 		ConversationID:  c.conversationID,
