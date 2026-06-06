@@ -6,7 +6,21 @@
       "fetchedAt": "2026-06-05T09:57:58.315Z",
       "expiresAt": "2026-06-06T09:57:58.315Z",
       "size": 59182
+    },
+    "github_com_search.md": {
+      "url": "https://github.com/search?q=anything-analyzer&type=repositories",
+      "title": "Repository search results · GitHub",
+      "fetchedAt": "2026-06-06T16:12:16.652Z",
+      "expiresAt": "2026-06-07T16:12:16.652Z",
+      "size": 6338
+    },
+    "github_com_Mouseww_anything-analyzer.md": {
+      "url": "https://github.com/Mouseww/anything-analyzer",
+      "title": "GitHub - Mouseww/anything-analyzer: 全能协议分析工具：浏览器抓包 + MITM 代理 + 指纹伪装 + AI 分析 + MCP Server 无缝对接 AI Agent/IDE   |  All-in-one protocol analysis toolkit — built-in browser capture, MITM proxy, JS hooks, fingerprint spoofing, AI analysis &amp; MCP server for agent integration · GitHub",
+      "fetchedAt": "2026-06-06T16:12:46.528Z",
+      "expiresAt": "2026-06-07T16:12:46.528Z",
+      "size": 8898
     }
   },
-  "lastUpdated": "2026-06-05T09:57:58.316Z"
+  "lastUpdated": "2026-06-06T16:12:46.528Z"
 }
