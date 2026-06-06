@@ -20,6 +20,46 @@ func (c *Client) Chat(userMsg string) (*ChatResult, error) {
 }
 
 // ChatStream sends a single conversation turn, receiving incremental text via the handler callback.
+//
+// This is the MAIN ENTRY POINT for ChatGPT conversations.
+// It orchestrates the complete 4-step authentication and conversation flow.
+//
+// Chrome DevTools Verification:
+//   Step-by-step verification:
+//   1. Look for: f/conversation/prepare (conduit token)
+//   2. Look for: sentinel/chat-requirements/prepare (sentinel prepare)
+//   3. If PoW required, verify sentinel/finalize appears after delay
+//   4. Look for: celsius/ws/user (WebSocket URL fetch)
+//   5. In WS tab, verify 4 initialization messages are sent
+//   6. Look for: f/conversation (main conversation POST)
+//   7. In Response tab, verify SSE events: delta_encoding, delta, stream_handoff
+//   8. In WS tab, verify subscribe message after stream_handoff
+//   9. Monitor WS messages for streaming delta updates
+//
+// What Might Change:
+//   - Authentication flow: New steps, different order
+//   - WebSocket initialization: Different topics, more subscriptions
+//   - Conversation request body: New fields, removed fields
+//   - SSE event types: New event types, changed delta format
+//   - WebSocket handoff: Different mechanism, no handoff
+//   - Message format: Content structure changes
+//
+// Detection with Anything-Analyzer:
+//   - Use "自动识别" mode to detect overall flow changes
+//   - Compare request/response timing with baseline
+//   - Monitor for new SSE event types in stream
+//   - Set up alerts for missing expected steps
+//
+// Detection with Mitmproxy:
+//   ```python
+//   def response(flow: http.HTTPFlow):
+//       if "f/conversation" in flow.request.path:
+//           # Check SSE events
+//           events = flow.response.text.split("event: ")
+//           for event in events:
+//               if event.strip():
+//                   ctx.log.info(f"[SSE] {event[:50]}")
+//   ```
 func (c *Client) ChatStream(userMsg string, handler StreamHandler) (*ChatResult, error) {
 	turnTraceID := GenerateUUID()
 
@@ -133,6 +173,36 @@ func (c *Client) ChatStream(userMsg string, handler StreamHandler) (*ChatResult,
 }
 
 // getWsURL calls celsius/ws/user to get the WebSocket connection URL.
+//
+// Chrome DevTools Verification:
+//   1. Look for: GET /backend-api/celsius/ws/user
+//   2. Verify request headers:
+//      - x-openai-target-path: /backend-api/celsius/ws/user
+//   3. Verify response format: {"websocket_url":"wss://r.chatgpt.com/backend-api/ws/..."}
+//   4. Copy the URL and verify it's used in subsequent WS connection
+//
+// What Might Change:
+//   - Endpoint path: celsius/ws/user → celsius/v2/ws/user
+//   - Response format: websocket_url → url, connection_url
+//   - URL format: wss://r.chatgpt.com/ → wss://ws.chatgpt.com/
+//   - URL structure: Different path format or parameters
+//
+// Detection with Anything-Analyzer:
+//   - Monitor for 404 errors on celsius/ws/user
+//   - Compare response structure with baseline
+//   - Set up alerts for URL format changes
+//
+// Detection with Mitmproxy:
+//   ```python
+//   def response(flow: http.HTTPFlow):
+//       if "celsius/ws/user" in flow.request.path:
+//           response = json.loads(flow.response.text)
+//           if "websocket_url" not in response:
+//               # Check for alternative field names
+//               for key in response.keys():
+//                   if "url" in key.lower() or "ws" in key.lower():
+//                       ctx.log.warn(f"[NEW URL FIELD] {key}: {response[key]}")
+//   ```
 func (c *Client) getWsURL() (string, error) {
 	resp, err := c.httpClient.R().
 		SetHeaders(map[string]string{
@@ -160,6 +230,47 @@ func (c *Client) getWsURL() (string, error) {
 }
 
 // dialChatWS fetches the WS URL, completes the handshake and initial subscription, and returns a ready connection.
+//
+// Chrome DevTools Verification:
+//   1. Look for the WS connection after celsius/ws/user response
+//   2. Click on the WS entry and switch to "Messages" tab
+//   3. Verify 4 initialization messages are sent:
+//      - Message 1: connect command with presence: background
+//      - Message 2: subscribe to calpico-chatgpt
+//      - Message 3: subscribe to conversations
+//      - Message 4: subscribe to app_notifications
+//   4. Verify handshake headers match client.commonHeaders()
+//   5. Verify Origin header: https://chatgpt.com
+//
+// What Might Change:
+//   - Number of subscriptions: 4 → more or fewer topics
+//   - Topic names: calpico-chatgpt → different name
+//   - Command format: {"id":1,"command":{...}} → different structure
+//   - Presence state: "background" → "active" or removed
+//   - WebSocket protocol: Different subprotocol or version
+//
+// Detection with Anything-Analyzer:
+//   - Use "自动识别" mode on WebSocket connections
+//   - Compare initialization messages with baseline
+//   - Set up alerts for missing/changed topics
+//
+// Detection with Mitmproxy:
+//   ```python
+//   def websocket_message(flow: http.HTTPFlow):
+//       if flow.websocket:
+//           # Count initialization messages
+//           init_count = 0
+//           for msg in flow.websocket.messages:
+//               if msg.from_client and "subscribe" in msg.text:
+//                   init_count += 1
+//           if init_count != 3:  # We expect 3 subscribe messages
+//               ctx.log.warn(f"[CHANGE] Subscription count: {init_count}")
+//   ```
+//
+// Topic Changes:
+//   - If new topics are required, update initMsg array
+//   - If topics are removed, they may be optional or deprecated
+//   - Check for alternative topic names in anything-analyzer reports
 func (c *Client) dialChatWS() (*websocket.Conn, error) {
 	wsURL, err := c.getWsURL()
 	if err != nil {
@@ -205,6 +316,64 @@ func nextWsID() int64 {
 }
 
 // streamConversation posts to f/conversation, parses stream_handoff, then continues via WebSocket.
+//
+// This is the MAIN CONVERSATION REQUEST that sends your message to ChatGPT.
+// It handles both the initial SSE stream and the WebSocket handoff.
+//
+// Chrome DevTools Verification:
+//   Step 1 - Main Request:
+//   1. Look for: POST /backend-api/f/conversation
+//   2. Verify request headers:
+//      - openai-sentinel-chat-requirements-token: <sentinel_token>
+//      - x-conduit-token: <conduit_token>
+//      - openai-sentinel-proof-token: <proof_token> (if PoW)
+//   3. Verify request body structure matches the body map below
+//   4. In Response tab, verify SSE events:
+//      - event: delta_encoding
+//      - event: delta (multiple times)
+//      - event: stream_handoff (contains topic_id)
+//   5. Verify response type: text/event-stream
+//
+//   Step 2 - WebSocket Handoff:
+//   1. Switch to WS tab after stream_handoff
+//   2. Look for subscribe message with topic_id from handoff
+//   3. Monitor for reply messages with encoded_item
+//   4. Verify encoded_item contains SSE events
+//   5. Look for [DONE] event to signal completion
+//
+// What Might Change:
+//   - Request headers: New headers, header name changes
+//   - Request body: New fields, removed fields, field type changes
+//   - SSE events: New event types, changed event names
+//   - Delta encoding: Different format (p/o/v → path/op/value)
+//   - Handoff mechanism: Different topic format, no handoff
+//   - WebSocket messages: Different structure, new message types
+//
+// Detection with Anything-Analyzer:
+//   - Use "API 逆向" mode on f/conversation requests
+//   - Monitor for new SSE event types in responses
+//   - Compare request body structure with baseline
+//   - Set up alerts for 400/401 errors (often breaking changes)
+//   - Use "自动识别" to detect WebSocket protocol changes
+//
+// Detection with Mitmproxy:
+//   ```python
+//   def response(flow: http.HTTPFlow):
+//       if "f/conversation" in flow.request.path:
+//           # Parse SSE events
+//           events = flow.response.text.split("event: ")
+//           known_events = ["delta_encoding", "delta", "stream_handoff", "done"]
+//           for event in events:
+//               event_type = event.split("\n")[0].strip()
+//               if event_type and event_type not in known_events:
+//                   ctx.log.warn(f"[NEW SSE EVENT] {event_type}")
+//   ```
+//
+// Breaking Change Examples:
+//   1. New required field: "client_version" → Add to body map
+//   2. Removed field: "paragen_cot_summary_display_override" → Remove from body
+//   3. Header rename: openai-sentinel-* → x-oai-sentinel-*
+//   4. Delta format change: {"p":"/path","o":"op","v":"val"} → {"path":"...","op":"...","value":"..."}
 func (c *Client) streamConversation(body interface{}, sentinelToken, proofToken, conduitToken, turnTraceID string, wsConn *websocket.Conn, handler StreamHandler) (*ChatResult, error) {
 	headers := map[string]string{
 		"Accept":       "text/event-stream",
@@ -484,6 +653,50 @@ func (c *Client) subscribeWSImageCombined(conn *websocket.Conn, turnTopicID, con
 
 // subscribeWSStream subscribes to a topic via an existing WebSocket connection and
 // consumes SSE data from encoded_item entries.
+//
+// Chrome DevTools Verification:
+//   1. After stream_handoff, switch to WS tab
+//   2. Look for subscribe message with topic_id from handoff
+//   3. Verify message format: {"id":5,"command":{"type":"subscribe","topic_id":"...","offset":"0"}}
+//   4. Monitor reply messages: look for "type":"reply"
+//   5. In reply.reply.catchups, find messages with payload.payload.encoded_item
+//   6. Decode encoded_item and verify SSE format:
+//      - event: delta
+//      - data: {"p":"/message/content/parts/0","o":"append","v":"text"}
+//   7. Look for final message with [DONE]
+//
+// What Might Change:
+//   - Subscribe format: New fields, different structure
+//   - Message wrapper: type:reply → different wrapper type
+//   - Catchups structure: catchups → messages, direct array
+//   - Encoded item location: payload.payload.encoded_item → different path
+//   - SSE format: Different event names, different data structure
+//   - Delta encoding: p/o/v → path/op/value, or full messages
+//
+// Detection with Anything-Analyzer:
+//   - Use "API 逆向" mode on WebSocket messages
+//   - Compare message structure with baseline
+//   - Set up alerts for new message types or formats
+//   - Monitor for changes in encoded_item parsing
+//
+// Detection with Mitmproxy:
+//   ```python
+//   def websocket_message(flow: http.HTTPFlow):
+//       if flow.websocket:
+//           for msg in flow.websocket.messages:
+//               if not msg.from_client and "encoded_item" in msg.text:
+//                   # Parse and check SSE events
+//                   import json
+//                   data = json.loads(msg.text)
+//                   # Navigate to encoded_item (path may change)
+//                   # Check for new event types
+//   ```
+//
+// Format Migration Examples:
+//   1. Catchups array → messages array: Update field access
+//   2. Path change: payload.payload.encoded_item → payload.encoded_item
+//   3. Delta format: p/o/v → path/op/value: Update processDeltaSSE
+//   4. New event type: event:thinking_start → Add handler
 func (c *Client) subscribeWSStream(conn *websocket.Conn, topicID string, result *ChatResult, lastText *string, handler StreamHandler) error {
 	subID := nextWsID()
 	subMsg := []map[string]interface{}{

@@ -9,6 +9,45 @@ import (
 )
 
 // PollAndDownloadImage polls conversation details and downloads DALL-E generated images.
+//
+// Chrome DevTools Verification:
+//   1. Look for image generation: SSE event with image_gen_task_id
+//   2. After generation, look for: GET /backend-api/conversation/<id>
+//   3. Verify request headers: x-openai-target-path: /backend-api/conversation/{id}
+//   4. In response, look for mapping.<msg_id>.message.content.parts
+//   5. Find asset_pointer field: "sediment://file_<id>"
+//   6. Extract file_<id> and look for: GET /backend-api/files/download/file_<id>
+//   7. Verify response has download_url field
+//   8. Verify final download from download_url succeeds
+//
+// What Might Change:
+//   - Poll endpoint: /conversation/{id} → /v2/conversation/{id}
+//   - Asset pointer format: sediment://file_* → different prefix
+//   - Download endpoint: /files/download/{id} → /v2/files/download/{id}
+//   - Response structure: mapping → different structure
+//   - Download URL format: Different CDN or format
+//   - Image metadata: New fields, different structure
+//
+// Detection with Anything-Analyzer:
+//   - Use "API 逆向" mode on conversation polling
+//   - Monitor for new asset_pointer formats
+//   - Compare response structure with baseline
+//   - Set up alerts for download URL format changes
+//
+// Detection with Mitmproxy:
+//   ```python
+//   def response(flow: http.HTTPFlow):
+//       if "conversation/" in flow.request.path and flow.request.method == "GET":
+//           response = json.loads(flow.response.text)
+//           # Check for new image formats
+//           if "mapping" not in response:
+//               ctx.log.warn("[CHANGE] mapping field missing from conversation response")
+//   ```
+//
+// Format Migration:
+//   1. New asset pointer: Update extractFileID regex
+//   2. New response structure: Update mapping navigation logic
+//   3. New download endpoint: Update downloadImage function
 func (c *Client) PollAndDownloadImage(conversationID string) (string, error) {
 	c.logf("[image] Waiting for image generation...")
 	const maxAttempts = 30

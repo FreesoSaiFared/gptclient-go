@@ -129,6 +129,52 @@ func (c *Client) logf(format string, args ...interface{}) {
 	}
 }
 
+// commonHeaders generates the HTTP headers required for ChatGPT API requests.
+//
+// These headers mimic a Chrome browser on Windows to avoid detection.
+// They include authentication, browser fingerprinting, and client information.
+//
+// Chrome DevTools Verification:
+//   1. Open chatgpt.com → F12 → Network tab
+//   2. Click on any ChatGPT API request
+//   3. Compare Request Headers with this function's output
+//   4. Critical headers to verify:
+//      - Authorization: Bearer <jwt_token>
+//      - User-Agent: Must match current Chrome version
+//      - sec-ch-ua*: Client Hints headers (security detection)
+//      - oai-* headers: OpenAI-specific headers
+//      - Cookie: If cookies are enabled
+//
+// What Might Change:
+//   - User-Agent: Chrome version updates (147.0 → 148.0)
+//   - sec-ch-ua*: Client hints format changes, new headers added
+//   - oai-* headers: New OpenAI headers, name changes (oai-device-id → oai-device-id-v2)
+//   - Cookie format: New required cookies, cookie encryption
+//   - Build hash: Updates with new ChatGPT web client builds
+//   - Build number: Increments with each deployment
+//
+// Detection with Anything-Analyzer:
+//   - Use "安全审计" mode to detect new security headers
+//   - Monitor for 403 errors (often due to header mismatch)
+//   - Compare sec-ch-ua headers with latest Chrome version
+//   - Set up alerts for User-Agent version changes
+//
+// Detection with Mitmproxy:
+//   ```python
+//   def request(flow: http.HTTPFlow):
+//       if "chatgpt.com" in flow.request.pretty_host:
+//           # Check for new headers
+//           baseline_headers = ["Authorization", "User-Agent", "sec-ch-ua", "oai-device-id"]
+//           for header in flow.request.headers:
+//               if header not in baseline_headers and "oai-" in header:
+//                   ctx.log.warn(f"[NEW HEADER] {header}: {flow.request.headers[header]}")
+//   ```
+//
+// Browser Fingerprint Updates:
+//   - Update defaultUA when Chrome releases new versions
+//   - Update sec-ch-ua values to match Chrome version
+//   - Update buildHash from ChatGPT web client source
+//   - Update buildNumber from latest deployment
 func (c *Client) commonHeaders() map[string]string {
 	h := map[string]string{
 		"Authorization":               "Bearer " + c.bearerToken,

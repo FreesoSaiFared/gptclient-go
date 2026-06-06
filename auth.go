@@ -7,7 +7,39 @@ import (
 	"time"
 )
 
-// getConduitToken fetches a conduit_token (Step 1).
+// getConduitToken fetches a conduit_token (Step 1 of authentication).
+//
+// This is the FIRST step in the ChatGPT Sentinel authentication flow.
+// The conduit token is required for the main conversation request.
+//
+// Chrome DevTools Verification:
+//   1. Open chatgpt.com → F12 → Network tab
+//   2. Send a message and look for: f/conversation/prepare
+//   3. Verify request headers include:
+//      - x-conduit-token: no-token
+//      - x-oai-turn-trace-id: <uuid>
+//      - x-openai-target-path: /backend-api/f/conversation/prepare
+//   4. Verify request body structure matches below
+//   5. Check response contains: {"status":"success", "conduit_token":"..."}
+//
+// What Might Change:
+//   - Endpoint path: /backend-api/f/conversation/prepare → /backend-api/v2/prepare
+//   - Required headers: x-conduit-token → x-oai-conduit-token
+//   - Request body fields: new required fields like "client_version"
+//   - Response structure: status field name or format
+//
+// Detection with Anything-Analyzer:
+//   - Use "API 逆向" mode on captured traffic
+//   - Monitor for 404/400 errors on prepare endpoint
+//   - Compare request body structure with baseline
+//
+// Detection with Mitmproxy:
+//   ```python
+//   def request(flow: http.HTTPFlow):
+//       if "f/conversation/prepare" in flow.request.path:
+//           # Log request for comparison
+//           ctx.log.info(f"Prepare request: {flow.request.text}")
+//   ```
 func (c *Client) getConduitToken(model, turnTraceID, partialText string) (string, error) {
 	if partialText == "" {
 		partialText = "h"
@@ -67,6 +99,43 @@ func (c *Client) getConduitToken(model, turnTraceID, partialText string) (string
 }
 
 // getSentinelToken fetches a sentinel token (Steps 2+3: prepare → PoW → finalize).
+//
+// This is the CORE authentication step that includes proof-of-work.
+// The sentinel token is the primary authentication token for conversations.
+//
+// Chrome DevTools Verification:
+//   1. Look for: sentinel/chat-requirements/prepare
+//   2. Verify request body has: {"p": "gAAAAAC<base64>"}
+//   3. Decode the base64 to verify fingerprint config array structure
+//   4. Check response for proofofwork.required: true/false
+//   5. If PoW required, look for sentinel/chat-requirements/finalize
+//   6. Verify final response contains: {"token":"<sentinel_token>", "expire_after":300}
+//
+// What Might Change:
+//   - PoW algorithm: FNV-1a hash → SHA-256, xxHash
+//   - Difficulty format: "0000" → "00000" or numeric difficulty
+//   - Seed format: simple string → complex object
+//   - Fingerprint config: array structure changes, new fields added
+//   - Token format: JWT → different encoding, new prefixes
+//   - Expiration time: 300s → 600s or dynamic
+//
+// Detection with Anything-Analyzer:
+//   - Use "JS 加密逆向" mode to track hash function changes
+//   - Monitor crypto.subtle.digest() calls for algorithm changes
+//   - Compare fingerprint config array with baseline
+//   - Set up alert for new PoW difficulty levels
+//
+// Detection with Mitmproxy:
+//   ```python
+//   def response(flow: http.HTTPFlow):
+//       if "sentinel/prepare" in flow.request.path:
+//           response = json.loads(flow.response.text)
+//           # Check for PoW changes
+//           if "proofofwork" in response:
+//               pow_data = response["proofofwork"]
+//               ctx.log.info(f"PoW difficulty: {pow_data.get('difficulty')}")
+//               ctx.log.info(f"PoW seed: {pow_data.get('seed')}")
+//   ```
 func (c *Client) getSentinelToken() (sentinelToken, proofToken string, err error) {
 	sid := GenerateUUID()
 	t0 := time.Now().UnixMilli()
