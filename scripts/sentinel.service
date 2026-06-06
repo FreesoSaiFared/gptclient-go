@@ -1,0 +1,19 @@
+[Unit]
+Description=ChatGPT Sentinel - OpenAI-Compatible Server
+Documentation=https://github.com/FreesoSaiFared/gptclient-go
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ned
+WorkingDirectory=/home/ned/gptclient-go
+Environment="PATH=/usr/local/go/bin:/usr/bin:/bin"
+ExecStart=/usr/local/go/bin/go run ./cmd/server -config config.json -addr :7777
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

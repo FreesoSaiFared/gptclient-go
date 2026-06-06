@@ -40,3 +40,6 @@ cmd/dll/
 
 # 配置文件 (避免泄露 Token)
 config.json
+
+# opencode 本地配置（可自定义，一般不提交）
+.opencode/opencode.json

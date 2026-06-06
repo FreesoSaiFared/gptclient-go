@@ -14,6 +14,7 @@
 - Browser fingerprint impersonation (TLS fingerprint + Chrome UA + full sec-ch-ua headers)
 - Ready-to-use interactive CLI (REPL)
 - OpenAI-compatible HTTP server (`POST /v1/chat/completions`)
+- **Systemd service integration with auto-start on boot**
 
 ---
 
@@ -420,6 +421,66 @@ client.SetModel("gpt-5-5-thinking")
 
 ---
 
+## Systemd Service Installation
+
+For production use, install the server as a systemd service to enable auto-start on boot and automatic restart on failure.
+
+### Installation
+
+```bash
+# Install the service (requires sudo)
+sudo ./scripts/install-service.sh
+
+# Start the service
+sudo ./scripts/start-sentinel.sh
+
+# Check status
+./scripts/status-sentinel.sh
+
+# Stop the service
+sudo ./scripts/stop-sentinel.sh
+
+# View logs
+sudo journalctl -u sentinel-go -f
+```
+
+### Service Features
+
+- Auto-start on system boot
+- Automatic restart on failure (after 5 seconds)
+- Logs to systemd journal
+- Runs as your user account
+- Monitors port 7777
+
+### Manual Management
+
+You can also manage the service directly with systemctl:
+
+```bash
+sudo systemctl start sentinel-go
+sudo systemctl stop sentinel-go
+sudo systemctl restart sentinel-go
+sudo systemctl enable sentinel-go
+sudo systemctl disable sentinel-go
+sudo systemctl status sentinel-go
+```
+
+### opencode Integration
+
+The project includes opencode provider configuration for "ChatGPT Sentinel":
+
+```bash
+# Start the service first
+sudo ./scripts/start-sentinel.sh
+
+# Then use in opencode
+opencode --model chatgpt-sentinel/gpt-5-5-thinking
+```
+
+See `.opencode/README.md` for details.
+
+---
+
 ## Project Structure
 
 ```
@@ -432,6 +493,7 @@ sentinel-go/
 ├── image.go          # DALL-E image polling & download
 ├── utils.go          # UUID, FNV hash, browser fingerprint construction
 ├── config.example.json  # Example configuration (safe to commit)
+├── scripts/          # Service installation and management scripts
 ├── go.mod
 └── cmd/
     ├── chat/
