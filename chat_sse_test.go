@@ -353,7 +353,7 @@ func TestProcessWSMessage(t *testing.T) {
 	}
 
 	c := &Client{}
-	done := c.processWSMessage(frame, result, &lastText, handler, &useDelta, &currentEvt)
+	done := c.processWSMessage(frame, result, ChatOptions{}, &lastText, handler, &useDelta, &currentEvt)
 
 	if done {
 		t.Error("processWSMessage should not be done yet")
@@ -383,7 +383,7 @@ func TestProcessWSMessage_Done(t *testing.T) {
 	}
 
 	c := &Client{}
-	done := c.processWSMessage(frame, result, &lastText, handler, &useDelta, &currentEvt)
+	done := c.processWSMessage(frame, result, ChatOptions{}, &lastText, handler, &useDelta, &currentEvt)
 
 	if !done {
 		t.Error("processWSMessage should return true for [DONE]")
@@ -408,7 +408,7 @@ func TestProcessWSMessage_DeltaEncoding(t *testing.T) {
 	}
 
 	c := &Client{}
-	c.processWSMessage(frame, result, &lastText, handler, &useDelta, &currentEvt)
+	c.processWSMessage(frame, result, ChatOptions{}, &lastText, handler, &useDelta, &currentEvt)
 
 	if !useDelta {
 		t.Error("useDelta should be true after delta_encoding event")
@@ -435,7 +435,7 @@ func TestProcessWSMessage_ConversationID(t *testing.T) {
 	}
 
 	c := &Client{}
-	c.processWSMessage(frame, result, &lastText, handler, &useDelta, &currentEvt)
+	c.processWSMessage(frame, result, ChatOptions{}, &lastText, handler, &useDelta, &currentEvt)
 
 	if result.ConversationID != "conv-xyz-789" {
 		t.Errorf("ConversationID: got %q, want %q", result.ConversationID, "conv-xyz-789")
@@ -454,9 +454,9 @@ func TestProcessWSMessage_MissingPayload(t *testing.T) {
 	}
 
 	c := &Client{}
-	done := c.processWSMessage(frame, result, &lastText, handler, &useDelta, &currentEvt)
+	done := c.processWSMessage(frame, result, ChatOptions{}, &lastText, handler, &useDelta, &currentEvt)
 
-	if done {
+	if !done {
 		t.Error("processWSMessage should return false for missing payload")
 	}
 }
@@ -477,9 +477,9 @@ func TestProcessWSMessage_EmptyEncodedItem(t *testing.T) {
 	}
 
 	c := &Client{}
-	done := c.processWSMessage(frame, result, &lastText, handler, &useDelta, &currentEvt)
+	done := c.processWSMessage(frame, result, ChatOptions{}, &lastText, handler, &useDelta, &currentEvt)
 
-	if done {
+	if !done {
 		t.Error("processWSMessage should return false for empty encoded_item")
 	}
 }

@@ -46,3 +46,17 @@ config.json
 
 # opencode 本地配置（可自定义，一般不提交）
 .opencode/opencode.json
+
+# Compiled binaries
+chat
+cookies
+server
+start
+
+# Binary archives
+sentinel-go.rar
+*.rar
+
+# Local tool directories
+.antigravitycli/
+.omx/
