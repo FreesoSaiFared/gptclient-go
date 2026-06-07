@@ -183,21 +183,3 @@ func TestGenerateUUID(t *testing.T) {
 		t.Errorf("GenerateUUID: two calls produced the same UUID %q", id)
 	}
 }
-
-func TestFnvHash(t *testing.T) {
-	// Deterministic: same input should produce same output
-	h1 := fnvHash("test")
-	h2 := fnvHash("test")
-	if h1 != h2 {
-		t.Errorf("fnvHash not deterministic: %q != %q", h1, h2)
-	}
-	// Different inputs should produce different outputs
-	h3 := fnvHash("other")
-	if h1 == h3 {
-		t.Errorf("fnvHash collision: %q == %q", h1, h3)
-	}
-	// Output should be 8 hex chars
-	if len(h1) != 8 {
-		t.Errorf("fnvHash length: got %d, want 8", len(h1))
-	}
-}

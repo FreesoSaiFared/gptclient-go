@@ -66,9 +66,11 @@ func NewClient(cfg Config) *Client {
 	}
 
 	httpC := req.C().
-		SetBaseURL("https://chatgpt.com").
-		SetCommonHeaders(c.commonHeaders()).
-		ImpersonateChrome()
+		SetBaseURL(orDefault(cfg.BaseURL, "https://chatgpt.com")).
+		SetCommonHeaders(c.commonHeaders())
+	if !cfg.DisableImpersonate {
+		httpC.ImpersonateChrome()
+	}
 
 	c.httpClient = httpC
 	return c

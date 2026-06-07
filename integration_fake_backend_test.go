@@ -140,7 +140,7 @@ func TestIntegration_FakeBackend_Chat(t *testing.T) {
 		DisableImpersonate: true,
 	})
 
-	result, err := client.Chat("ping")
+	result, err := client.Chat(ChatOptions{Text: "ping"})
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestIntegration_FakeBackend_MultiTurn(t *testing.T) {
 	})
 
 	// First turn
-	result1, err := client.Chat("ping")
+	result1, err := client.Chat(ChatOptions{Text: "ping"})
 	if err != nil {
 		t.Fatalf("Chat turn 1 failed: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestIntegration_FakeBackend_MultiTurn(t *testing.T) {
 	}
 
 	// Second turn
-	result2, err := client.Chat("ping again")
+	result2, err := client.Chat(ChatOptions{Text: "ping again"})
 	if err != nil {
 		t.Fatalf("Chat turn 2 failed: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestIntegration_FakeBackend_ChatStream(t *testing.T) {
 	})
 
 	var deltas []string
-	result, err := client.ChatStream("ping", func(delta string) {
+	result, err := client.ChatStream(ChatOptions{Text: "ping"}, func(delta string) {
 		deltas = append(deltas, delta)
 	})
 	if err != nil {
@@ -243,7 +243,7 @@ func TestIntegration_FakeBackend_ResetSession(t *testing.T) {
 	})
 
 	// First turn
-	_, err := client.Chat("ping")
+	_, err := client.Chat(ChatOptions{Text: "ping"})
 	if err != nil {
 		t.Fatalf("Chat failed: %v", err)
 	}
