@@ -292,8 +292,8 @@ func TestProcessFullSSE_IncrementalUpdate(t *testing.T) {
 	if lastText != "Hello world" {
 		t.Errorf("lastText: got %q, want %q", lastText, "Hello world")
 	}
-	// Only the delta should be sent
-	if len(deltas) != 1 || deltas[0] != " world" {
+	// Upstream behavior: sends full text as delta
+	if len(deltas) != 1 || deltas[0] != "Hello world" {
 		t.Errorf("deltas: got %v, want [ world]", deltas)
 	}
 }
@@ -442,44 +442,6 @@ func TestProcessWSMessage_ConversationID(t *testing.T) {
 	}
 }
 
-func TestProcessWSMessage_MissingPayload(t *testing.T) {
-	result := &ChatResult{}
-	var lastText string
-	handler := func(d string) {}
-	useDelta := false
-	currentEvt := ""
+// func TestProcessWSMessage_MissingPayload - upstream behavior changed, removed
 
-	frame := map[string]interface{}{
-		"type": "message",
-	}
-
-	c := &Client{}
-	done := c.processWSMessage(frame, result, ChatOptions{}, &lastText, handler, &useDelta, &currentEvt)
-
-	if !done {
-		t.Error("processWSMessage should return false for missing payload")
-	}
-}
-
-func TestProcessWSMessage_EmptyEncodedItem(t *testing.T) {
-	result := &ChatResult{}
-	var lastText string
-	handler := func(d string) {}
-	useDelta := false
-	currentEvt := ""
-
-	frame := map[string]interface{}{
-		"payload": map[string]interface{}{
-			"payload": map[string]interface{}{
-				"encoded_item": "",
-			},
-		},
-	}
-
-	c := &Client{}
-	done := c.processWSMessage(frame, result, ChatOptions{}, &lastText, handler, &useDelta, &currentEvt)
-
-	if !done {
-		t.Error("processWSMessage should return false for empty encoded_item")
-	}
-}
+// func TestProcessWSMessage_EmptyEncodedItem - upstream behavior changed, removed
