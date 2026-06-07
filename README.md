@@ -1,354 +1,247 @@
 # sentinel-go
 
-> A Go reverse-engineered ChatGPT web client library. Uses browser Bearer Token to interact with ChatGPT directly — no OpenAI API key required.
+> 用 Go 语言逆向实现的 ChatGPT Web 端非官方客户端库，无需 OpenAI API Key，直接使用浏览器 Bearer Token 与 ChatGPT 对话。支持作为 **CLI 工具**或**本地 OpenAI 兼容 API 服务器**使用。
 
 ---
 
-## Features
+## 特性
 
-- Full ChatGPT web Sentinel authentication flow (conduit token + PoW + sentinel token)
-- SSE streaming output (real-time incremental text callback)
-- Multi-turn conversation support (auto-maintains conversation_id / parent_message_id)
-- DALL-E image generation with auto-download
-- Temporary mode (don't save conversation history / don't update memory)
-- Browser fingerprint impersonation (TLS fingerprint + Chrome UA + full sec-ch-ua headers)
-- Ready-to-use interactive CLI (REPL)
-- OpenAI-compatible HTTP server (`POST /v1/chat/completions`)
-- **Systemd service integration with auto-start on boot**
+- ✅ 完整实现 ChatGPT Web 端 Sentinel 认证流程（conduit token + SHA3-512 PoW + sentinel token）
+- ✅ WebSocket 流式输出（实时回调增量文本，低延迟）
+- ✅ 多轮对话（自动维护 conversation_id / parent_message_id）
+- ✅ DALL-E 图片生成（自动识别生图请求，实时显示思考过程，自动下载到本地）
+- ✅ 多模态输入（上传图片到对话）
+- ✅ 文件上传（PDF、文档等）
+- ✅ 临时模式（不保存对话历史 / 不更新记忆）
+- ✅ 浏览器指纹伪装（TLS 指纹 + Edge 146 UA + 完整 sec-ch-ua Headers）
+- ✅ OpenAI 兼容 API 服务器（`/v1/chat/completions`）+ 多 Token 池轮换
+- ✅ 流式产物侧信道（`sentinel`：生图多版本、沙箱文件）— 见 [docs/CLIENT_STREAMING.md](docs/CLIENT_STREAMING.md)
+- ✅ 开箱即用的交互式 CLI（REPL）
 
 ---
 
-## Quick Start
+## 项目结构
 
-### 1. Clone the project
-
-```bash
-git clone https://github.com/yourname/sentinel-go.git
-cd sentinel-go
+```
+sentinel-go/
+├── types.go            # 公开类型定义（Config、ChatResult、StreamHandler 等）
+├── client.go           # Client 核心结构体 & HTTP 客户端初始化
+├── auth.go             # Sentinel 三步认证（conduit + PoW + sentinel）
+├── pow.go              # SHA3-512 Proof-of-Work 算法实现
+├── chat.go             # 对话主流程（SSE + WebSocket 流式处理）
+├── image.go            # DALL-E 图片轮询、下载、HTTP 代理
+├── files.go            # 文件三步上传（Azure Blob + ChatGPT 注册）
+├── utils.go            # UUID、工具函数
+├── config.json         # 本地凭证配置（不要提交到 Git）
+├── Dockerfile
+├── docker-compose.yml
+└── cmd/
+    ├── chat/main.go    # CLI 交互式 REPL 入口
+    └── server/main.go  # OpenAI 兼容 API 服务器入口
 ```
 
-### 2. Install dependencies
+---
 
-```bash
-go mod tidy
-```
+## 快速开始 — CLI 模式
 
-### 3. Get a Bearer Token
+### 1. 获取 Bearer Token
 
-1. Open a browser and log in to [https://chatgpt.com](https://chatgpt.com)
-2. Press `F12` to open Developer Tools → Network tab
-3. Send any message, filter requests to find `/backend-api/conversation`
-4. In the request headers, find `Authorization: Bearer eyJ...` and copy the full JWT after `Bearer `
-
-> ⚠️ Token validity is approximately **10 days**. You'll need to re-obtain it after expiry.
-
-### 4. Configure credentials
-
-Copy the example config and edit it:
-
-```bash
-cp config.example.json config.json
-```
-
-Edit `config.json`:
+1. 登录 [https://chatgpt.com](https://chatgpt.com)
+2. 在同一浏览器中打开 [https://chatgpt.com/api/auth/session](https://chatgpt.com/api/auth/session)
+3. 页面会显示一段 JSON，全选（`Ctrl+A`）后复制
+4. 将**完整 JSON** 粘贴到 `config.json` 的 `bearerToken` 字段，程序会自动提取其中的 `accessToken`
 
 ```json
 {
-  "bearerToken": "eyJhbGciOi...your JWT Token here...",
+  "bearerToken": "{\"user\":{...},\"accessToken\":\"eyJhbGci...\"}",
   "cookieString": ""
 }
 ```
 
-Or with automatic cookie extraction:
+> 也可以只填纯 JWT 字符串（`eyJhbGci...`），两种格式都支持。
+>
+> ⚠️ Token 有效期约 **10 天**，过期后重新打开该页面获取即可。
 
-```json
-{
-  "bearerToken": "REPLACE_WITH_JWT",
-  "cookieString": "",
-  "cookies": {
-    "enabled": true,
-    "browser": "chrome",
-    "profile": "Default",
-    "domain": "chatgpt.com",
-    "keyring": "auto"
-  }
-}
-```
-
-> ⚠️ **NEVER commit `config.json` to a public repository.** It contains your personal Bearer Token and cookies. The file is already listed in `.gitignore`.
-
-### 5. Run
+### 2. 运行
 
 ```bash
-# One-command startup — auto-detects browser cookies, refreshes token, starts server
-go run ./cmd/start
+# 交互式多轮对话（REPL 模式）
+go run ./cmd/chat/
 
-# Interactive multi-turn conversation (REPL mode)
-go run ./cmd/chat -config config.json
+# 单次问答
+go run ./cmd/chat/ "你好，介绍一下自己"
 
-# One-shot question
-go run ./cmd/chat -config config.json "Hello, introduce yourself"
+# 指定模型
+go run ./cmd/chat/ -model gpt-4o-mini "帮我写一段 Go 代码"
 
-# Specify a model
-go run ./cmd/chat -config config.json -model gpt-5-5-thinking "Write some Go code"
-
-# Temporary mode (don't save history)
-go run ./cmd/chat -config config.json -temp
-
-# OpenAI-compatible server
-go run ./cmd/server -config config.json -addr :7777
-
-# Server with custom base URL (for testing)
-go run ./cmd/server -config config.json -addr :7777 -base-url http://localhost:9999
+# 临时模式（不保存历史）
+go run ./cmd/chat/ -temp
 ```
 
----
+### CLI 参数
 
-## CLI Flags
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-config` | `config.json` | 配置文件路径 |
+| `-model` | `gpt-5-5-thinking` | 使用的模型名称 |
+| `-temp` | `false` | 开启临时模式（不保存对话历史） |
 
-### Chat CLI (`cmd/chat`)
+### REPL 内置命令
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-config` | `config.json` | Config file path |
-| `-model` | `gpt-5-5-thinking` | Model name |
-| `-temp` | `false` | Enable temporary mode (don't save history) |
-| `-base-url` | `""` | Backend base URL (empty defaults to `https://chatgpt.com`) |
-| `-cookie-file` | `""` | Netscape cookies.txt file path (overrides config) |
-| `-browser` | `""` | Browser to extract cookies from (overrides config) |
-| `-profile` | `""` | Browser profile name or path (overrides config) |
-| `-cookie-domain` | `""` | Domain to filter cookies for (default chatgpt.com) |
-| `-print-cookie-status` | `false` | Print cookie resolution status |
+| 命令 | 说明 |
+|------|------|
+| `/new` | 开启新对话，清空上下文 |
+| `/model <name>` | 切换模型（不传参数则显示当前模型） |
+| `/temp` | 切换临时模式开/关 |
+| `/info` | 查看当前会话详情（conversation_id、model、轮次等） |
+| `/exit` / `/quit` | 退出程序 |
 
-### Server (`cmd/server`)
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-config` | `config.json` | Config file path |
-| `-addr` | `:7777` | Listen address |
-| `-model` | `""` | Default model (empty uses request model or `gpt-5-5-thinking` fallback) |
-| `-base-url` | `""` | Backend base URL (empty defaults to `https://chatgpt.com`) |
-
-### Cookie Utility (`cmd/cookies`)
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-config` | `config.json` | Config file path (for `-write`) |
-| `-browser` | `""` | Browser to extract cookies from |
-| `-profile` | `""` | Browser profile name or path |
-| `-cookie-file` | `""` | Netscape cookies.txt file path |
-| `-domain` | `chatgpt.com` | Domain to filter cookies for |
-| `-print` | `false` | Print redacted cookie status summary |
-| `-write` | `false` | Write resolved cookie string to config file |
-
-### Start (`cmd/start`)
-
-One-command launcher with auto-detection and interactive browser selection.
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-config` | `config.json` | Config file path |
-| `-addr` | `:7777` | Listen address |
-| `-model` | `gpt-5-5-thinking` | Default model |
-
-The start command will:
-1. Check if the current bearer token is valid
-2. If not, probe all installed browsers for chatgpt.com cookies
-3. Display a table with cookie counts, keyring status, and account info
-4. Let you select which browser to use
-5. Auto-refresh the access token and save config
-6. Start the OpenAI-compatible server
-
----
-
-## REPL Commands
-
-When in interactive mode, these built-in commands are available:
-
-| Command | Description |
-|---------|-------------|
-| `/new` | Start a new conversation, clear context |
-| `/model <name>` | Switch model (no argument shows current model and options) |
-| `/temp` | Toggle temporary mode on/off |
-| `/info` | View current session details (conversation_id, model, turn count, etc.) |
-| `/exit` or `/quit` | Exit the program |
-
-**Available models:**
+**可选模型参考：**
 
 ```
 gpt-5-5-thinking
-gpt-5-5
+gpt-4o
+gpt-4o-mini
 o4-mini-high
 ```
 
 ---
 
-## OpenAI-Compatible Server
+## 快速开始 — API 服务器模式
 
-The server exposes a single endpoint compatible with the OpenAI chat completions API:
+将 sentinel-go 作为本地 **OpenAI 兼容 API 服务器**运行，可直接接入 Cherry Studio、Open WebUI、NextChat、Cursor 等任意支持自定义 API 地址的客户端。
 
-```
-POST /v1/chat/completions
-```
-
-### Curl example
+### 启动服务器
 
 ```bash
-curl -X POST http://localhost:7777/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-dummy" \
-  -d '{
-    "model": "gpt-5-5-thinking",
-    "messages": [{"role": "user", "content": "Hello!"}],
-    "stream": false
-  }'
+go run ./cmd/server/
 ```
 
-### Streaming example
+默认监听 `http://localhost:5005`，接口路径：
+- `POST /v1/chat/completions`
+- `GET  /v1/models`
+
+### 配置客户端
+
+在你的 AI 客户端中填写：
+
+| 项目 | 值 |
+|------|----|
+| API Base URL | `http://localhost:5005` |
+| API Key | 留空（或填任意值，视鉴权配置而定） |
+| Model | `gpt-5-5-thinking`（或其他支持的模型） |
+
+### Docker 部署
+
+**直接运行：**
 
 ```bash
-curl -X POST http://localhost:7777/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-dummy" \
-  -d '{
-    "model": "gpt-5-5-thinking",
-    "messages": [{"role": "user", "content": "Tell me a story"}],
-    "stream": true
-  }'
+docker build -t sentinel-go .
+docker run -d \
+  -p 5005:5005 \
+  -e AUTHORIZATION="your-api-key" \
+  -v $(pwd)/tokens.json:/app/tokens.json \
+  -v $(pwd)/images:/app/images \
+  sentinel-go
 ```
 
-### Auth behavior
-
-- If the request includes `Authorization: Bearer <token>`, that token is used.
-- If the token is empty, `sk-dummy`, or `sk-sentinel-local`, the server falls back to the `bearerToken` in `config.json`.
-- If no valid token is found, the server returns `401 Unauthorized`.
-
-### Important notes
-
-- The server operates in **last-message proxy mode**: all messages are assembled into a prompt string, but only the combined text is sent to ChatGPT. Full OpenAI chat semantics (system messages, multi-message context) are not preserved end-to-end.
-- A new `Client` is created per request, so **conversation state is not preserved** across requests.
-- Auto-image download is disabled on the server (`DisableAutoImage = true`).
-
----
-
-## Testing
-
-All tests use a **fake local backend** — no real ChatGPT credentials or network access required.
+**使用 docker-compose：**
 
 ```bash
-# Run all tests
-go test ./...
-
-# Run with verbose output
-go test -v ./...
-
-# Run only unit tests
-go test -v -run "Test(RuneSlice|OrDefault|TruncateStr|NewClient|ProcessDelta)" ./...
-
-# Run only integration tests
-go test -v -run "TestIntegration" ./...
+# 编辑 docker-compose.yml 中的环境变量后：
+docker compose up -d
 ```
 
-### Test categories
+### 服务器环境变量
 
-| File | Description |
-|------|-------------|
-| `utils_test.go` | Unit tests for utility functions |
-| `client_test.go` | Unit tests for Client creation and configuration |
-| `chat_sse_test.go` | Unit tests for SSE/WS message processing |
-| `cookies_test.go` | Unit tests for cookie loading, extraction, and decryption |
-| `integration_fake_backend_test.go` | Integration test with fake HTTP/WS backend |
-| `cmd/server/main_test.go` | Server endpoint tests against `newHandler` |
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `PORT` | `5005` | 监听端口 |
+| `AUTHORIZATION` | `""` | API 鉴权 Key（留空则不校验，直接用传入 token 作为 ChatGPT token） |
+| `DEFAULT_MODEL` | `gpt-5-5-thinking` | 默认模型 |
+| `TEMP_MODE` | `false` | 临时模式（不保存对话历史） |
+| `IMAGE_DIR` | `images` | 图片保存目录 |
+| `TOKENS_FILE` | `tokens.json` | Token 持久化文件路径（JSON，含 access + session） |
+| `SESSION_TTL_MINUTES` | `120` | Session 不活跃超时（分钟） |
 
----
+### Token 管理
 
-## Cookie Configuration
+服务器支持多 Token 轮换，通过管理面板（`http://localhost:5005`）或以下接口管理：
 
-The `bearerToken` is still required for authentication. Cookies are additional context that may improve compatibility or bypass certain restrictions.
+| 接口 | 说明 |
+|------|------|
+| `GET  /tokens` | 查看 Token 池状态 |
+| `POST /tokens/upload` | 批量上传 Token（JSON body: `{"tokens":"eyJ..."}`) |
+| `GET  /tokens/add/:token` | 添加单个 Token |
+| `POST /tokens/clear` | 清空 Token 池 |
+| `GET  /tokens/errors` | 查看失效 Token 列表 |
+| `GET  /health` | 健康检查 |
 
-### Resolution order
-
-1. If `cookieString` is non-empty in config, use it exactly as provided.
-2. Else if `cookies.enabled` is `true` and `cookies.file` is set, load a Netscape cookies.txt file.
-3. Else if `cookies.enabled` is `true` and `cookies.browser` is set, extract browser cookies.
-4. Else use an empty cookie string.
-
-### Manual cookie string
-
-Set `cookieString` in `config.json` to a semicolon-separated `name=value` string:
+**`tokens.json` 持久化格式：**
 
 ```json
 {
-  "bearerToken": "eyJ...",
-  "cookieString": "cookie1=val1; cookie2=val2"
+  "version": 1,
+  "tokens": [
+    {
+      "id": "a1b2c3",
+      "access_token": "eyJhbGciOiJS...",
+      "session_token": "eyJhbGciOiJkaXIi...",
+      "expires_at": "2026-08-29T10:19:02Z",
+      "updated_at": "2026-05-31T12:00:00Z"
+    }
+  ]
 }
 ```
 
-### Netscape cookies.txt
+**上传/import 支持的文本格式（每行一条，或整段 session JSON）：**
 
-Export cookies from your browser using a browser extension (e.g., "Get cookies.txt LOCALLY") and point the config at the file:
+| 格式 | 示例 |
+|------|------|
+| 仅 Access | `eyJhbGciOiJS...` |
+| Access + Session | `eyJhbGciOiJS...----eyJhbGciOiJkaXIi...`（四个 `-`） |
+| 仅 Session | `eyJhbGciOiJkaXIi...` 或 `st:...` |
+| Session API JSON | 从 `/api/auth/session` 复制的整段 JSON |
 
-```json
-{
-  "bearerToken": "eyJ...",
-  "cookies": {
-    "enabled": true,
-    "file": "/path/to/cookies.txt",
-    "domain": "chatgpt.com"
-  }
-}
-```
+首次启动若仅有旧版 `tokens.txt`（按行 `st:` / JWT），会自动迁移到 `tokens.json`。
 
-### Browser extraction
+配置 `TOKEN_REFRESH_AHEAD_SEC`（默认 300）可在 AT 过期前提前用 ST 换新；刷新后会写回 JSON。池模式请求若遇 401 会自动尝试刷新一次。
 
-The `cookies.browser` field extracts cookies directly from your browser's local profile. Supported browsers:
+### 产物检测与流式抓包（stream-capture）
 
-- `chrome`, `chromium`, `brave`, `edge`, `opera`, `vivaldi` (Chromium-based)
-- `firefox`
+对话结束后是否轮询**图片 / 沙箱文件（pdf、txt 等）**，由 SSE 与对话 JSON 中的**结构化信号**决定（如 `image_gen_task_id`、`author.name=python`、`execution_output`、`/mnt/data/...`），**不使用用户/助手文本关键词**。
 
-Example:
-
-```json
-{
-  "bearerToken": "eyJ...",
-  "cookies": {
-    "enabled": true,
-    "browser": "chrome",
-    "profile": "Default",
-    "domain": "chatgpt.com"
-  }
-}
-```
-
-### Browser extraction caveats
-
-- **Linux-first**: Browser extraction is implemented for Linux. Cross-platform path mapping exists where simple, but Windows DPAPI and macOS Keychain are not implemented.
-- **Chromium v10 cookies**: AES-CBC encrypted cookies using the `peanuts` password and empty-password fallback are supported.
-- **Chromium v11 cookies**: These require OS keyring support and are **not supported**. The error message will suggest using `cookies.file` or `cookieString` instead.
-- **Firefox**: Reads `cookies.sqlite` from local profiles. Schema version 16+ (millisecond expiry) is handled.
-- If extraction is explicitly enabled (`cookies.enabled: true`) and fails, the application exits with a clear error. If cookies are not enabled, extraction failures are silently ignored.
-- **No real browser profiles are accessed in tests.**
-
-### Cookie utility command
-
-Use `cmd/cookies` to test or write cookie configuration:
+抓取三种场景原始流式数据以便分析、调参：
 
 ```bash
-# Print a redacted summary (no cookie values shown)
-go run ./cmd/cookies -browser chrome -profile Default -domain chatgpt.com -print
-
-# Extract from browser and write to config
-go run ./cmd/cookies -browser chrome -profile Default -domain chatgpt.com -config config.json -write
-
-# Load from a cookies.txt file and write to config
-go run ./cmd/cookies -cookie-file ./cookies.txt -domain chatgpt.com -config config.json -write
+go run ./cmd/stream-capture/ -config config.json
+# 仅跑某一类: -case image | txt | pdf
 ```
 
-> ⚠️ No cookie values are ever printed. The `-print` flag only shows counts and byte sizes.
+输出目录 `testdata/stream-captures/<时间>-<case>/`：
+
+| 文件 | 内容 |
+|------|------|
+| `sse.ndjson` | 每条 SSE 的 event、data、解析出的 signals |
+| `conversation.json` | 对话 mapping 全量 |
+| `analysis.json` | 信号汇总与 `ArtifactPlan` |
+| `summary.txt` | 人类可读摘要 |
+
+### API 兼容性说明
+
+与标准 OpenAI API 的主要差异：
+
+| 项目 | 说明 |
+|------|------|
+| 多轮对话 | 上下文由服务端 Session 维护，建议每次请求携带响应中返回的 `conversation_id` |
+| `usage` 字段 | 全部为 0（逆向无法统计 token 用量） |
+| `temperature` / `max_tokens` | 接收但不生效 |
+| 图片生成 | 发送生图请求会自动触发 DALL-E，图片以 Markdown 格式 `![](url)` 追加在回复末尾 |
+| `conversation_id`（扩展字段）| 请求中可传入以续接指定会话；响应中会返回，下次携带即可保持上下文 |
 
 ---
 
-## Library Usage
+## 作为 Go 库使用
 
 ```go
 import sentinel "sentinel-go"
@@ -356,191 +249,111 @@ import sentinel "sentinel-go"
 client := sentinel.NewClient(sentinel.Config{
     BearerToken: "eyJ...",
     Model:       "gpt-5-5-thinking",
-    TempMode:    false,
 })
 
-// Non-streaming (wait for complete reply)
-result, err := client.Chat("Hello!")
+// 非流式（等待完整回复）
+result, err := client.Chat(sentinel.ChatOptions{Text: "你好！"})
 fmt.Println(result.Text)
 
-// Streaming (print increments in real time)
-result, err := client.ChatStream("Tell me a story", func(delta string) {
+// 流式（实时打印增量）
+result, err := client.ChatStream(sentinel.ChatOptions{Text: "讲个故事"}, func(delta string) {
     fmt.Print(delta)
 })
 
-// Multi-turn conversation (IDs are maintained automatically)
-client.Chat("My name is Alice")
-result, _ := client.Chat("What is my name?") // → Alice
+// 多轮对话（自动衔接，无需手动维护 ID）
+client.Chat(sentinel.ChatOptions{Text: "我叫张三"})
+result, _ = client.Chat(sentinel.ChatOptions{Text: "我叫什么名字？"}) // → 张三
 
-// Reset session (start new conversation)
+// 重置会话（开启新对话）
 client.ResetSession()
 
-// Switch model
-client.SetModel("gpt-5-5-thinking")
+// 切换模型
+client.SetModel("gpt-4o-mini")
+
+// 禁用自动图片下载（由调用方异步处理）
+client.SetDisableAutoImage(true)
 ```
 
-### Config Fields
+### Config 字段
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
 | `BearerToken` | string | ✅ | ChatGPT JWT Token |
-| `CookieString` | string | ❌ | Browser cookie (optional, improves compatibility) |
-| `Model` | string | ❌ | Model name, default `gpt-5-5-thinking` |
-| `DeviceID` | string | ❌ | Device ID; auto-generates UUID if empty |
-| `BuildHash` | string | ❌ | Client build hash |
-| `BuildNumber` | string | ❌ | Client build number |
-| `UserAgent` | string | ❌ | User-Agent, defaults to Edge 146 |
-| `Language` | string | ❌ | Language, default `zh-CN` |
-| `ImageDir` | string | ❌ | Image download directory, default `images/` |
-| `TempMode` | bool | ❌ | Temporary mode, default `false` |
-| `BaseURL` | string | ❌ | Backend base URL, default `https://chatgpt.com` |
-| `DisableImpersonate` | bool | ❌ | Disable Chrome TLS fingerprint (for testing), default `false` |
+| `CookieString` | string | ❌ | 浏览器 Cookie（可选，增强兼容性） |
+| `Model` | string | ❌ | 模型名，默认 `gpt-5-5-thinking` |
+| `DeviceID` | string | ❌ | 设备 ID，留空自动生成 UUID |
+| `BuildHash` | string | ❌ | 客户端构建 Hash |
+| `BuildNumber` | string | ❌ | 客户端构建号 |
+| `UserAgent` | string | ❌ | User-Agent，默认模拟 Edge 146 |
+| `Language` | string | ❌ | 语言，默认 `zh-CN` |
+| `ImageDir` | string | ❌ | 图片下载目录，默认 `images/` |
+| `TempMode` | bool | ❌ | 临时模式，默认 `false` |
 
-### RuntimeConfig Fields (config.json)
+### ChatResult 字段
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `bearerToken` | string | ✅ | ChatGPT JWT Token |
-| `cookieString` | string | ❌ | Manual cookie string (highest priority) |
-| `cookies.enabled` | bool | ❌ | Enable automatic cookie extraction, default `false` |
-| `cookies.file` | string | ❌ | Path to Netscape cookies.txt file |
-| `cookies.browser` | string | ❌ | Browser name for extraction (chrome, firefox, etc.) |
-| `cookies.profile` | string | ❌ | Browser profile name or path |
-| `cookies.domain` | string | ❌ | Domain to filter cookies for, default `chatgpt.com` |
-| `cookies.keyring` | string | ❌ | Keyring backend, default `auto` |
-
-### ChatResult Fields
-
-| Field | Description |
-|-------|-------------|
-| `Text` | Full assistant reply text |
-| `ConversationID` | Conversation ID |
-| `LastAssistantMsgID` | Last assistant message ID (for multi-turn chaining) |
-| `ImageTaskID` | DALL-E image task ID (if any) |
-| `ImagePath` | Local path of downloaded image (if any) |
+| 字段 | 说明 |
+|------|------|
+| `Text` | 助手完整回复文本 |
+| `ConversationID` | 对话 ID |
+| `LastAssistantMsgID` | 最后一条助手消息 ID（多轮衔接用） |
+| `ImageTaskID` | DALL-E 图片任务触发标志 |
+| `ImageFileID` | 图片文件 ID（从 WebSocket asset_pointer 直接提取） |
+| `ImagePath` | 已下载图片的本地路径 |
 
 ---
 
-## Systemd Service Installation
+## 认证流程
 
-For production use, install the server as a systemd service to enable auto-start on boot and automatic restart on failure.
-
-### Installation
-
-```bash
-# Install the service (requires sudo)
-sudo ./scripts/install-service.sh
-
-# Start the service
-sudo ./scripts/start-sentinel.sh
-
-# Check status
-./scripts/status-sentinel.sh
-
-# Stop the service
-sudo ./scripts/stop-sentinel.sh
-
-# View logs
-sudo journalctl -u sentinel-go -f
-```
-
-### Service Features
-
-- Auto-start on system boot
-- Automatic restart on failure (after 5 seconds)
-- Logs to systemd journal
-- Runs as your user account
-- Monitors port 7777
-
-### Manual Management
-
-You can also manage the service directly with systemctl:
-
-```bash
-sudo systemctl start sentinel-go
-sudo systemctl stop sentinel-go
-sudo systemctl restart sentinel-go
-sudo systemctl enable sentinel-go
-sudo systemctl disable sentinel-go
-sudo systemctl status sentinel-go
-```
-
-### opencode Integration
-
-The project includes opencode provider configuration for "ChatGPT Sentinel":
-
-```bash
-# Start the service first
-sudo ./scripts/start-sentinel.sh
-
-# Then use in opencode
-opencode --model chatgpt-sentinel/gpt-5-5-thinking
-```
-
-See `.opencode/README.md` for details.
-
----
-
-## Project Structure
+每次发送消息前自动完成以下步骤：
 
 ```
-sentinel-go/
-├── types.go          # Public type definitions
-├── client.go         # Client core struct & HTTP initialization
-├── auth.go           # Sentinel three-step authentication flow
-├── chat.go           # Conversation flow & SSE event parsing
-├── cookies.go        # Cookie loading, browser extraction, decryption, and probing
-├── image.go          # DALL-E image polling & download
-├── utils.go          # UUID, FNV hash, browser fingerprint construction
-├── config.example.json  # Example configuration (safe to commit)
-├── scripts/          # Service installation and management scripts
-├── go.mod
-└── cmd/
-    ├── chat/
-    │   └── main.go   # CLI entry point
-    ├── cookies/
-    │   └── main.go   # Cookie configuration utility
-    ├── server/
-    │   └── main.go   # OpenAI-compatible HTTP server
-    └── start/
-        └── main.go   # One-command launcher with auto-detection
+1. POST /backend-api/f/conversation/prepare
+       → 获取 conduit_token
+
+2. POST /backend-api/sentinel/chat-requirements/prepare
+       → 获取 PoW 挑战（seed + difficulty）
+
+3. 本地 SHA3-512 暴力求解 Proof-of-Work Token
+       → RequirementsToken (前缀 gAAAAAC) + ProofToken (前缀 gAAAAAB)
+
+4. POST /backend-api/sentinel/chat-requirements/finalize
+       → 获取 sentinel_token
+
+5. GET  /backend-api/celsius/ws/user
+       → 获取 WebSocket URL，建立持久连接
+
+6. POST /backend-api/f/conversation (SSE)
+       → 初始 SSE 流，获取 stream_handoff / turn_exchange_id
+
+7. WebSocket 订阅 conversation-turn-{id}
+       → 接收流式文本 delta（文字回复 / 生图思考过程 / 图片 asset_pointer）
 ```
 
 ---
 
-## Authentication Flow
+## 依赖
 
-Before each message, the following steps are completed:
-
-```
-1. POST /conversation/prepare      → Get conduit_token
-2. POST /sentinel/chat-requirements/prepare → Get PoW challenge
-3. (If PoW required) Brute-force FNV-1a hash until difficulty prefix is met
-4. POST /sentinel/chat-requirements/finalize → Get sentinel_token
-5. POST /backend-api/f/conversation (SSE)  → Stream reply
-```
+| 依赖 | 说明 |
+|------|------|
+| [imroc/req/v3](https://github.com/imroc/req) | HTTP 客户端，支持 Chrome TLS 指纹伪装 |
+| [gorilla/websocket](https://github.com/gorilla/websocket) | WebSocket 客户端 |
+| [gin-gonic/gin](https://github.com/gin-gonic/gin) | API 服务器 HTTP 框架 |
+| [golang.org/x/crypto/sha3](https://pkg.go.dev/golang.org/x/crypto/sha3) | SHA3-512（PoW 求解） |
 
 ---
 
-## Dependencies
+## 注意事项
 
-| Dependency | Description |
-|------------|-------------|
-| [imroc/req/v3](https://github.com/imroc/req) | HTTP client with Chrome TLS fingerprint impersonation |
-| [refraction-networking/utls](https://github.com/refraction-networking/utls) | TLS fingerprint library (indirect dependency) |
-| [quic-go/quic-go](https://github.com/quic-go/quic-go) | HTTP/3 support (indirect dependency) |
-| [gorilla/websocket](https://github.com/gorilla/websocket) | WebSocket client for streaming handoff |
-| [modernc.org/sqlite](https://modernc.org/sqlite/) | Pure-Go SQLite driver for browser cookie extraction |
+- 本项目仅供学习与研究使用，请勿用于商业或违反 OpenAI 服务条款的场景
+- Bearer Token 是个人凭证，请勿泄露，**不要将 `config.json` 提交到公开仓库**
+- 建议在 `.gitignore` 中添加以下内容：
 
----
-
-## Caveats
-
-- This project is for **learning and research only**. Do not use it in ways that violate OpenAI's Terms of Service.
-- Bearer Tokens are personal credentials. **Never share them** and **never commit `config.json` to a public repository**.
-- The server creates a new Client per HTTP request — multi-turn conversation state is **not preserved** across requests.
-- The server operates in **last-message proxy mode**: messages are combined into a single prompt string rather than being sent as a structured chat history.
-- `config.json` is already in `.gitignore` — make sure it stays that way.
+```gitignore
+config.json
+tokens.json
+tokens.txt
+images/
+```
 
 ---
 

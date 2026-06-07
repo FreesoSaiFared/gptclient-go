@@ -2,14 +2,12 @@ package sentinel
 
 import (
 	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"regexp"
 	"time"
 )
 
-// GenerateUUID generates a v4 UUID.
+// GenerateUUID 生成 v4 UUID
 func GenerateUUID() string {
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
@@ -19,166 +17,11 @@ func GenerateUUID() string {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// encodeBase64JSON JSON-encodes a value and then Base64-encodes it (corresponds to JS O0 function).
-func encodeBase64JSON(v interface{}) string {
-	data, _ := json.Marshal(v)
-	return base64.StdEncoding.EncodeToString(data)
-}
-
-// fnvHash corresponds to JS rEe function: FNV-1a variant hash.
-//
-// This is used for proof-of-work computation in the sentinel authentication.
-// The hash must start with a specific prefix to be accepted.
-//
-// Chrome DevTools Verification:
-//   1. Look for: sentinel/chat-requirements/prepare
-//   2. Check if proofofwork.required is true
-//   3. Note the difficulty value (e.g., "0000")
-//   4. Look for: sentinel/chat-requirements/finalize after delay
-//   5. Verify the proof_token has prefix "gAAAAAB"
-//   6. The hash computation happens between prepare and finalize
-//
-// What Might Change:
-//   - Hash algorithm: FNV-1a → SHA-256, xxHash, BLAKE3
-//   - Hash constants: Offset basis, prime, finalization steps
-//   - Difficulty comparison: String comparison → numeric comparison
-//   - PoW format: "gAAAAAB" prefix → different prefix or no prefix
-//   - Maximum iterations: 500000 → higher or dynamic limit
-//
-// Detection with Anything-Analyzer:
-//   - Use "JS 加密逆向" mode to monitor crypto functions
-//   - Hook into JavaScript crypto operations
-//   - Compare hash outputs with different inputs
-//   - Set up alerts for algorithm changes
-//
-// Detection with Mitmproxy:
-//   ```python
-//   def request(flow: http.HTTPFlow):
-//       if "sentinel/finalize" in flow.request.path:
-//           body = json.loads(flow.request.text)
-//           proof = body.get("proofofwork", "")
-//           if proof and not proof.startswith("gAAAAAB"):
-//               ctx.log.warn(f"[CHANGE] Proof token prefix changed: {proof[:10]}")
-//   ```
-//
-// Algorithm Migration:
-//   If hash function changes:
-//   1. Capture new algorithm from JavaScript source
-//   2. Implement in Go with same behavior
-//   3. Verify output matches JavaScript for same inputs
-//   4. Update difficulty comparison logic if needed
-//   5. Test with different PoW scenarios
-func fnvHash(s string) string {
-	var h uint32 = 2166136261
-	for i := 0; i < len(s); i++ {
-		h ^= uint32(s[i])
-		h *= 16777619
-	}
-	h ^= h >> 16
-	h *= 2246822507
-	h ^= h >> 13
-	h *= 3266489909
-	h ^= h >> 16
-	return fmt.Sprintf("%08x", h)
-}
-
-// buildCfg constructs the fingerprint configuration array (corresponds to JS buildCfg).
-//
-// This array is encoded and sent to the sentinel/prepare endpoint.
-// It acts as a browser fingerprint to verify the client is legitimate.
-//
-// Chrome DevTools Verification:
-//   1. Look for: sentinel/chat-requirements/prepare
-//   2. Copy the request body: {"p": "gAAAAAC<base64>"}
-//   3. Decode the base64 (after "gAAAAAC")
-//   4. Parse the JSON and verify array structure:
-//      - Index 0: 3000 (constant)
-//      - Index 1: JS Date.toString() format
-//      - Index 4: User-Agent string
-//      - Index 6: Build hash (prod-*)
-//      - Index 7: Language code (zh-CN)
-//      - Index 13: Performance timing (float)
-//      - Index 14: UUID (session ID)
-//   5. Compare with this function's output
-//
-// What Might Change:
-//   - Array length: New fields added or removed
-//   - Field values: Constants change, new defaults
-//   - Field order: Index positions shift
-//   - Build hash format: New hash algorithm
-//   - Performance timing: Different precision or calculation
-//   - Date format: Changes to JavaScript Date.toString()
-//
-// Detection with Anything-Analyzer:
-//   - Use "API 逆向" mode on sentinel/prepare requests
-//   - Decode base64 and compare array structure with baseline
-//   - Set up alerts for array length changes
-//   - Monitor for new field names in decoded JSON
-//
-// Detection with Mitmproxy:
-//   ```python
-//   import base64, json
-//   def request(flow: http.HTTPFlow):
-//       if "sentinel/prepare" in flow.request.path:
-//           body = json.loads(flow.request.text)
-//           encoded = body["p"][7:]  # Remove "gAAAAAC" prefix
-//           decoded = base64.b64decode(encoded)
-//           cfg = json.loads(decoded)
-//           ctx.log.info(f"[FINGERPRINT] Array length: {len(cfg)}")
-//           if len(cfg) != 25:
-//               ctx.log.warn(f"[CHANGE] Fingerprint array length changed!")
-//   ```
-//
-// Browser Updates:
-//   - Update buildHash from ChatGPT web client source code
-//   - Update buildNumber from deployment metadata
-//   - Update language support if new languages added
-//   - Update sec-ch-ua headers in client.go to match browser version
-func buildCfg(ua, buildHash, lang, sid string, t0 int64, perfNow float64) []interface{} {
-	return []interface{}{
-		3000,
-		jsDateString(time.Now()),
-		int64(4294967296),
-		nil,
-		ua,
-		"",
-		buildHash,
-		lang,
-		"zh-CN,en,en-GB,en-US",
-		nil,
-		"credentials\u2252[object Navigator]",
-		"location",
-		"fetch",
-		perfNow,
-		sid,
-		"",
-		28,
-		t0,
-		0, 0, 0, 0, 0, 0, 0,
-	}
-}
-
-// jsDateString simulates JavaScript Date.toString() output format.
-func jsDateString(t time.Time) string {
-	days := [...]string{"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"}
-	months := [...]string{"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-		"Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
-	name, offset := t.Zone()
-	sign := "+"
-	if offset < 0 {
-		sign = "-"
-		offset = -offset
-	}
-	h := offset / 3600
-	m := (offset % 3600) / 60
-	return fmt.Sprintf("%s %s %02d %d %02d:%02d:%02d GMT%s%02d%02d (%s)",
-		days[t.Weekday()], months[t.Month()-1], t.Day(), t.Year(),
-		t.Hour(), t.Minute(), t.Second(), sign, h, m, name)
-}
-
 func perfNowMs(start time.Time) float64 {
 	return float64(time.Since(start).Microseconds()) / 1000.0
 }
+
+
 
 func truncateStr(s string, maxLen int) string {
 	if len(s) <= maxLen {
@@ -202,7 +45,7 @@ func orDefault(val, def string) string {
 	return def
 }
 
-// getNestedString retrieves a string value from a nested map by key path.
+// getNestedString 从嵌套 map 中按路径取 string 值
 func getNestedString(m map[string]interface{}, keys ...string) string {
 	current := m
 	for i, key := range keys {
@@ -219,7 +62,7 @@ func getNestedString(m map[string]interface{}, keys ...string) string {
 	return ""
 }
 
-// getFirstStringPart retrieves content.parts[0] as a string from a message map.
+// getFirstStringPart 从 message 的 content.parts[0] 取字符串
 func getFirstStringPart(msg map[string]interface{}) string {
 	content, ok := msg["content"].(map[string]interface{})
 	if !ok {
@@ -234,6 +77,25 @@ func getFirstStringPart(msg map[string]interface{}) string {
 }
 
 var fileIDRegexp = regexp.MustCompile(`file_[a-f0-9]+`)
+
+// LogContentPreview 打印文本长度与首尾预览（UTF-8 安全截断）。
+func LogContentPreview(logf func(string, ...interface{}), tag string, s string) {
+	if logf == nil {
+		return
+	}
+	runes := []rune(s)
+	n := len(runes)
+	if n == 0 {
+		logf("[%s] len=0 (empty)", tag)
+		return
+	}
+	const edge = 500
+	preview := s
+	if n > edge*2 {
+		preview = string(runes[:edge]) + "\n...(truncated " + fmt.Sprintf("%d", n-edge*2) + " runes)...\n" + string(runes[n-edge:])
+	}
+	logf("[%s] len=%d preview:\n%s", tag, n, preview)
+}
 
 func extractFileID(pointer string) string {
 	if pointer == "" {

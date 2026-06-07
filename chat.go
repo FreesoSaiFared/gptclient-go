@@ -14,94 +14,120 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Chat sends a single conversation turn and returns the complete result (non-streaming).
-func (c *Client) Chat(userMsg string) (*ChatResult, error) {
-	return c.ChatStream(userMsg, nil)
+// ImageAspectRatio 图片宽高比
+type ImageAspectRatio string
+
+const (
+	ImageAspectAuto      ImageAspectRatio = ""      // 自动（默认）
+	ImageAspectSquare    ImageAspectRatio = "1:1"   // 方形
+	ImageAspectPortrait  ImageAspectRatio = "3:4"   // 竖版
+	ImageAspectStory     ImageAspectRatio = "9:16"  // 故事版
+	ImageAspectLandscape ImageAspectRatio = "4:3"   // 横版
+	ImageAspectWidescreen ImageAspectRatio = "16:9" // 宽屏
+)
+
+// ChatOptions 对话请求参数
+type ChatOptions struct {
+	Text           string
+	Images         []UploadedFile
+	ForcePictureV2 bool
+	// ImageAspect 仅在 ForcePictureV2=true 时生效，指定生成图片的宽高比
+	ImageAspect ImageAspectRatio
+	// Artifacts 产物（生图/沙箱文件）流式侧信道；正文仍走 StreamHandler
+	Artifacts ArtifactStreamConfig
+	// OnConversationID 首次得知 conversation_id 时回调（server 用于提前 Register，以便流中即可拉取 /api/image/proxy）
+	OnConversationID func(convID string)
 }
 
-// ChatStream sends a single conversation turn, receiving incremental text via the handler callback.
-//
-// This is the MAIN ENTRY POINT for ChatGPT conversations.
-// It orchestrates the complete 4-step authentication and conversation flow.
-//
-// Chrome DevTools Verification:
-//   Step-by-step verification:
-//   1. Look for: f/conversation/prepare (conduit token)
-//   2. Look for: sentinel/chat-requirements/prepare (sentinel prepare)
-//   3. If PoW required, verify sentinel/finalize appears after delay
-//   4. Look for: celsius/ws/user (WebSocket URL fetch)
-//   5. In WS tab, verify 4 initialization messages are sent
-//   6. Look for: f/conversation (main conversation POST)
-//   7. In Response tab, verify SSE events: delta_encoding, delta, stream_handoff
-//   8. In WS tab, verify subscribe message after stream_handoff
-//   9. Monitor WS messages for streaming delta updates
-//
-// What Might Change:
-//   - Authentication flow: New steps, different order
-//   - WebSocket initialization: Different topics, more subscriptions
-//   - Conversation request body: New fields, removed fields
-//   - SSE event types: New event types, changed delta format
-//   - WebSocket handoff: Different mechanism, no handoff
-//   - Message format: Content structure changes
-//
-// Detection with Anything-Analyzer:
-//   - Use "自动识别" mode to detect overall flow changes
-//   - Compare request/response timing with baseline
-//   - Monitor for new SSE event types in stream
-//   - Set up alerts for missing expected steps
-//
-// Detection with Mitmproxy:
-//   ```python
-//   def response(flow: http.HTTPFlow):
-//       if "f/conversation" in flow.request.path:
-//           # Check SSE events
-//           events = flow.response.text.split("event: ")
-//           for event in events:
-//               if event.strip():
-//                   ctx.log.info(f"[SSE] {event[:50]}")
-//   ```
-func (c *Client) ChatStream(userMsg string, handler StreamHandler) (*ChatResult, error) {
+// Chat 发送一轮对话，返回完整结果（非流式）
+func (c *Client) Chat(opts ChatOptions) (*ChatResult, error) {
+	return c.ChatStream(opts, nil)
+}
+
+// ChatStream 发送一轮对话，通过 handler 回调实时接收增量文本
+func (c *Client) ChatStream(opts ChatOptions, handler StreamHandler) (*ChatResult, error) {
 	turnTraceID := GenerateUUID()
 
-	c.logf("[step 1] Fetching conduit token...")
-	conduitToken, err := c.getConduitToken(c.model, turnTraceID, runeSlice(userMsg, 5))
+	c.logf("[step 1] 获取 conduit token...")
+	conduitToken, err := c.getConduitToken(c.model, turnTraceID, runeSlice(opts.Text, 5))
 	if err != nil {
 		return nil, fmt.Errorf("get conduit token: %w", err)
 	}
 
-	c.logf("[step 2] Fetching sentinel token...")
+	c.logf("[step 2] 获取 sentinel token...")
 	sentinelToken, proofToken, err := c.getSentinelToken()
 	if err != nil {
 		return nil, fmt.Errorf("get sentinel token: %w", err)
 	}
 
-	c.logf("[step 2.5] Establishing WebSocket connection...")
+	c.logf("[step 2.5] 建立 WebSocket 连接...")
 	wsConn, err := c.dialChatWS()
 	if err != nil {
 		return nil, fmt.Errorf("dial ws: %w", err)
 	}
 	defer wsConn.Close()
 
+	promptText := opts.Text
+	if opts.ForcePictureV2 && opts.ImageAspect != ImageAspectAuto {
+		promptText += "\n\n将宽高比设为 " + string(opts.ImageAspect)
+	}
+
+	// 区分图片（multimodal）和文档（my_files）
+	// 图片需要插入 content.parts 作为 image_asset_pointer；文档只放 metadata.attachments
+	var parts []interface{}
+	hasImages := false
+	for _, f := range opts.Images {
+		if f.UseCase == "multimodal" {
+			parts = append(parts, f.ToAssetPointerPart())
+			hasImages = true
+		}
+	}
+	parts = append(parts, promptText)
+
+	contentType := "text"
+	if hasImages {
+		contentType = "multimodal_text"
+	}
+
+	attachments := []Attachment{}
+	for _, f := range opts.Images {
+		attachments = append(attachments, f.ToAttachment())
+	}
+
 	msgID := GenerateUUID()
+	userMsgObj := map[string]interface{}{
+		"id":          msgID,
+		"author":      map[string]string{"role": "user"},
+		"create_time": float64(time.Now().UnixMilli()) / 1000.0,
+		"content": map[string]interface{}{
+			"content_type": contentType,
+			"parts":        parts,
+		},
+		"metadata": map[string]interface{}{
+			"developer_mode_connector_ids": []string{},
+			"selected_sources":             []string{},
+			"selected_github_repos":        []string{},
+			"selected_all_github_repos":    false,
+			"serialization_metadata":       map[string]interface{}{"custom_symbol_offsets": []interface{}{}},
+		},
+	}
+	if len(attachments) > 0 {
+		userMsgObj["metadata"].(map[string]interface{})["attachments"] = attachments
+	}
+
+	systemHints := []string{}
+	if opts.ForcePictureV2 {
+		systemHints = append(systemHints, "picture_v2")
+		meta := userMsgObj["metadata"].(map[string]interface{})
+		meta["system_hints"] = systemHints
+		// picture_v2 不能带 selected_sources，否则直接失败 (静默失败)
+		delete(meta, "selected_sources")
+	}
+
 	body := map[string]interface{}{
 		"action": "next",
 		"messages": []map[string]interface{}{
-			{
-				"id":          msgID,
-				"author":      map[string]string{"role": "user"},
-				"create_time": float64(time.Now().UnixMilli()) / 1000.0,
-				"content": map[string]interface{}{
-					"content_type": "text",
-					"parts":        []string{userMsg},
-				},
-				"metadata": map[string]interface{}{
-					"developer_mode_connector_ids": []string{},
-					"selected_sources":             []string{},
-					"selected_github_repos":        []string{},
-					"selected_all_github_repos":    false,
-					"serialization_metadata":       map[string]interface{}{"custom_symbol_offsets": []interface{}{}},
-				},
-			},
+			userMsgObj,
 		},
 		"parent_message_id":        c.parentMessageID,
 		"model":                    c.model,
@@ -109,7 +135,7 @@ func (c *Client) ChatStream(userMsg string, handler StreamHandler) (*ChatResult,
 		"timezone":                 "Asia/Shanghai",
 		"conversation_mode":        map[string]string{"kind": "primary_assistant"},
 		"enable_message_followups": true,
-		"system_hints":             []string{},
+		"system_hints":             systemHints,
 		"supports_buffering":       true,
 		"supported_encodings":      []string{"v1"},
 		"client_contextual_info": map[string]interface{}{
@@ -133,11 +159,11 @@ func (c *Client) ChatStream(userMsg string, handler StreamHandler) (*ChatResult,
 
 	convDesc := c.conversationID
 	if convDesc == "" {
-		convDesc = "(new conversation)"
+		convDesc = "(新对话)"
 	}
-	c.logf("[step 3] Sending conversation: model=%s, conversation=%s, turn=%d", c.model, convDesc, c.turnCount+1)
+	c.logf("[step 3] 发送对话: model=%s, conversation=%s, turn=%d", c.model, convDesc, c.turnCount+1)
 
-	result, err := c.streamConversation(body, sentinelToken, proofToken, conduitToken, turnTraceID, wsConn, handler)
+	result, err := c.streamConversation(body, opts, sentinelToken, proofToken, conduitToken, turnTraceID, wsConn, handler)
 	if err != nil {
 		return nil, err
 	}
@@ -150,59 +176,29 @@ func (c *Client) ChatStream(userMsg string, handler StreamHandler) (*ChatResult,
 	}
 	c.turnCount++
 
-	c.logf("[info] conversation_id=%s, turn=%d, reply=%d chars",
-		c.conversationID, c.turnCount, len([]rune(result.Text)))
+	c.logf("[info] conversation_id=%s, turn=%d, reply=%d字, thinking=%d字, final=%d字",
+		c.conversationID, c.turnCount,
+		len([]rune(result.Text)),
+		len([]rune(result.ThinkingText)),
+		len([]rune(result.assistantFinalText)))
+	LogContentPreview(c.logf, "reply-text", result.Text)
+	if result.ThinkingText != "" && result.ThinkingText != result.Text {
+		LogContentPreview(c.logf, "reply-thinking", result.ThinkingText)
+	}
 
-	if !c.DisableAutoImage {
-		if result.ImageFileID != "" && result.ConversationID != "" {
-			// Download image directly from WebSocket asset_pointer file ID, no polling needed
-			c.logf("[image] Downloading image directly: %s", result.ImageFileID)
-			imgPath, err := c.DownloadImageByFileID(result.ImageFileID, result.ConversationID)
-			if err != nil {
-				c.logf("[image] Download failed: %v", err)
-			}
-			result.ImagePath = imgPath
-		} else if result.ImageTaskID != "" && result.ConversationID != "" {
-			// Fallback: poll conversation details for asset_pointer
-			imgPath, _ := c.PollAndDownloadImage(result.ConversationID)
-			result.ImagePath = imgPath
-		}
+	c.MergeApplyAndEmitArtifacts(result, opts)
+	if len(result.SandboxArtifacts) > 0 {
+		c.logf("[artifact] SSE 沙箱产物: %v", sandboxNames(result.SandboxArtifacts))
+		result.Text = ""
+	}
+	if result.ExpectGeneratedImages && len(result.ImageFileIDs) > 0 {
+		c.logf("[artifact] 生图 file_id: %v", result.ImageFileIDs)
 	}
 
 	return result, nil
 }
 
-// getWsURL calls celsius/ws/user to get the WebSocket connection URL.
-//
-// Chrome DevTools Verification:
-//   1. Look for: GET /backend-api/celsius/ws/user
-//   2. Verify request headers:
-//      - x-openai-target-path: /backend-api/celsius/ws/user
-//   3. Verify response format: {"websocket_url":"wss://r.chatgpt.com/backend-api/ws/..."}
-//   4. Copy the URL and verify it's used in subsequent WS connection
-//
-// What Might Change:
-//   - Endpoint path: celsius/ws/user → celsius/v2/ws/user
-//   - Response format: websocket_url → url, connection_url
-//   - URL format: wss://r.chatgpt.com/ → wss://ws.chatgpt.com/
-//   - URL structure: Different path format or parameters
-//
-// Detection with Anything-Analyzer:
-//   - Monitor for 404 errors on celsius/ws/user
-//   - Compare response structure with baseline
-//   - Set up alerts for URL format changes
-//
-// Detection with Mitmproxy:
-//   ```python
-//   def response(flow: http.HTTPFlow):
-//       if "celsius/ws/user" in flow.request.path:
-//           response = json.loads(flow.response.text)
-//           if "websocket_url" not in response:
-//               # Check for alternative field names
-//               for key in response.keys():
-//                   if "url" in key.lower() or "ws" in key.lower():
-//                       ctx.log.warn(f"[NEW URL FIELD] {key}: {response[key]}")
-//   ```
+// getWsURL 调用 celsius/ws/user 获取 WebSocket 连接地址
 func (c *Client) getWsURL() (string, error) {
 	resp, err := c.httpClient.R().
 		SetHeaders(map[string]string{
@@ -229,48 +225,7 @@ func (c *Client) getWsURL() (string, error) {
 	return result.WebsocketURL, nil
 }
 
-// dialChatWS fetches the WS URL, completes the handshake and initial subscription, and returns a ready connection.
-//
-// Chrome DevTools Verification:
-//   1. Look for the WS connection after celsius/ws/user response
-//   2. Click on the WS entry and switch to "Messages" tab
-//   3. Verify 4 initialization messages are sent:
-//      - Message 1: connect command with presence: background
-//      - Message 2: subscribe to calpico-chatgpt
-//      - Message 3: subscribe to conversations
-//      - Message 4: subscribe to app_notifications
-//   4. Verify handshake headers match client.commonHeaders()
-//   5. Verify Origin header: https://chatgpt.com
-//
-// What Might Change:
-//   - Number of subscriptions: 4 → more or fewer topics
-//   - Topic names: calpico-chatgpt → different name
-//   - Command format: {"id":1,"command":{...}} → different structure
-//   - Presence state: "background" → "active" or removed
-//   - WebSocket protocol: Different subprotocol or version
-//
-// Detection with Anything-Analyzer:
-//   - Use "自动识别" mode on WebSocket connections
-//   - Compare initialization messages with baseline
-//   - Set up alerts for missing/changed topics
-//
-// Detection with Mitmproxy:
-//   ```python
-//   def websocket_message(flow: http.HTTPFlow):
-//       if flow.websocket:
-//           # Count initialization messages
-//           init_count = 0
-//           for msg in flow.websocket.messages:
-//               if msg.from_client and "subscribe" in msg.text:
-//                   init_count += 1
-//           if init_count != 3:  # We expect 3 subscribe messages
-//               ctx.log.warn(f"[CHANGE] Subscription count: {init_count}")
-//   ```
-//
-// Topic Changes:
-//   - If new topics are required, update initMsg array
-//   - If topics are removed, they may be optional or deprecated
-//   - Check for alternative topic names in anything-analyzer reports
+// dialChatWS 获取 ws url 并完成握手+初始化订阅，返回已就绪的连接
 func (c *Client) dialChatWS() (*websocket.Conn, error) {
 	wsURL, err := c.getWsURL()
 	if err != nil {
@@ -289,7 +244,7 @@ func (c *Client) dialChatWS() (*websocket.Conn, error) {
 		return nil, fmt.Errorf("ws dial: %w", err)
 	}
 
-	// Initialization: connect + subscribe to three base topics
+	// 初始化：connect + 订阅三个基础 topic
 	initMsg := []map[string]interface{}{
 		{"id": 1, "command": map[string]interface{}{
 			"type":     "connect",
@@ -304,77 +259,19 @@ func (c *Client) dialChatWS() (*websocket.Conn, error) {
 		return nil, fmt.Errorf("ws init send: %w", err)
 	}
 
-	// Don't wait for init reply; the subscribeWSStream read loop handles all frames uniformly
+	// 不等待初始化 reply，由 subscribeWSStream 的读取循环统一处理所有帧
 	return conn, nil
 }
 
-// wsIDCounter auto-increments WebSocket command IDs (cross-call).
+// wsIDCounter 用于 WebSocket 命令 id 自增（跨调用）
 var wsIDCounter int64 = 4
 
 func nextWsID() int64 {
 	return atomic.AddInt64(&wsIDCounter, 1)
 }
 
-// streamConversation posts to f/conversation, parses stream_handoff, then continues via WebSocket.
-//
-// This is the MAIN CONVERSATION REQUEST that sends your message to ChatGPT.
-// It handles both the initial SSE stream and the WebSocket handoff.
-//
-// Chrome DevTools Verification:
-//   Step 1 - Main Request:
-//   1. Look for: POST /backend-api/f/conversation
-//   2. Verify request headers:
-//      - openai-sentinel-chat-requirements-token: <sentinel_token>
-//      - x-conduit-token: <conduit_token>
-//      - openai-sentinel-proof-token: <proof_token> (if PoW)
-//   3. Verify request body structure matches the body map below
-//   4. In Response tab, verify SSE events:
-//      - event: delta_encoding
-//      - event: delta (multiple times)
-//      - event: stream_handoff (contains topic_id)
-//   5. Verify response type: text/event-stream
-//
-//   Step 2 - WebSocket Handoff:
-//   1. Switch to WS tab after stream_handoff
-//   2. Look for subscribe message with topic_id from handoff
-//   3. Monitor for reply messages with encoded_item
-//   4. Verify encoded_item contains SSE events
-//   5. Look for [DONE] event to signal completion
-//
-// What Might Change:
-//   - Request headers: New headers, header name changes
-//   - Request body: New fields, removed fields, field type changes
-//   - SSE events: New event types, changed event names
-//   - Delta encoding: Different format (p/o/v → path/op/value)
-//   - Handoff mechanism: Different topic format, no handoff
-//   - WebSocket messages: Different structure, new message types
-//
-// Detection with Anything-Analyzer:
-//   - Use "API 逆向" mode on f/conversation requests
-//   - Monitor for new SSE event types in responses
-//   - Compare request body structure with baseline
-//   - Set up alerts for 400/401 errors (often breaking changes)
-//   - Use "自动识别" to detect WebSocket protocol changes
-//
-// Detection with Mitmproxy:
-//   ```python
-//   def response(flow: http.HTTPFlow):
-//       if "f/conversation" in flow.request.path:
-//           # Parse SSE events
-//           events = flow.response.text.split("event: ")
-//           known_events = ["delta_encoding", "delta", "stream_handoff", "done"]
-//           for event in events:
-//               event_type = event.split("\n")[0].strip()
-//               if event_type and event_type not in known_events:
-//                   ctx.log.warn(f"[NEW SSE EVENT] {event_type}")
-//   ```
-//
-// Breaking Change Examples:
-//   1. New required field: "client_version" → Add to body map
-//   2. Removed field: "paragen_cot_summary_display_override" → Remove from body
-//   3. Header rename: openai-sentinel-* → x-oai-sentinel-*
-//   4. Delta format change: {"p":"/path","o":"op","v":"val"} → {"path":"...","op":"...","value":"..."}
-func (c *Client) streamConversation(body interface{}, sentinelToken, proofToken, conduitToken, turnTraceID string, wsConn *websocket.Conn, handler StreamHandler) (*ChatResult, error) {
+// streamConversation 发 f/conversation，解析 stream_handoff 后走 WebSocket 续流
+func (c *Client) streamConversation(body interface{}, opts ChatOptions, sentinelToken, proofToken, conduitToken, turnTraceID string, wsConn *websocket.Conn, handler StreamHandler) (*ChatResult, error) {
 	headers := map[string]string{
 		"Accept":       "text/event-stream",
 		"Content-Type": "application/json",
@@ -436,9 +333,17 @@ func (c *Client) streamConversation(body interface{}, sentinelToken, proofToken,
 			continue
 		}
 
-		if cid, ok := evt["conversation_id"].(string); ok && cid != "" {
-			result.ConversationID = cid
+		if c.StreamRecorder != nil {
+			c.StreamRecorder.RecordSSE(currentEvent, payload, evt)
 		}
+		result.ArtifactSignals = MergeSignals(result.ArtifactSignals, ExtractSignalsFromJSON(evt))
+		c.MergeApplyAndEmitArtifacts(result, opts)
+
+		if strings.Contains(payload, "dalle") || strings.Contains(payload, `"tool"`) || strings.Contains(payload, "image") || strings.Contains(payload, "thought") || strings.Contains(payload, "reasoning_content") {
+			c.logf("[debug-sse] payload: %s", payload)
+		}
+
+		c.noteConversationID(result, opts, evt)
 
 		evtType, _ := evt["type"].(string)
 		switch evtType {
@@ -452,12 +357,26 @@ func (c *Client) streamConversation(body interface{}, sentinelToken, proofToken,
 			}
 			currentEvent = ""
 			continue
+		case "server_ste_metadata":
+			if handoffTopicID == "" {
+				if md, ok := evt["metadata"].(map[string]interface{}); ok {
+					if tid, ok := md["turn_exchange_id"].(string); ok && tid != "" {
+						handoffTopicID = "conversation-turn-" + tid
+					}
+				}
+			}
+			currentEvent = ""
+			continue
 		}
 
-		// server_ste_metadata event (image/thinking scenarios): extract turn_exchange_id (fallback)
-		if currentEvent == "server_ste_metadata" {
-			if tid, ok := evt["turn_exchange_id"].(string); ok && tid != "" && handoffTopicID == "" {
+		// 兼容 event: server_ste_metadata + data 内无 type 字段的旧格式
+		if currentEvent == "server_ste_metadata" && handoffTopicID == "" {
+			if tid, ok := evt["turn_exchange_id"].(string); ok && tid != "" {
 				handoffTopicID = "conversation-turn-" + tid
+			} else if md, ok := evt["metadata"].(map[string]interface{}); ok {
+				if tid, ok := md["turn_exchange_id"].(string); ok && tid != "" {
+					handoffTopicID = "conversation-turn-" + tid
+				}
 			}
 		}
 
@@ -470,39 +389,63 @@ func (c *Client) streamConversation(body interface{}, sentinelToken, proofToken,
 		currentEvent = ""
 	}
 
-	// If we already got the reply via SSE directly, return it
-	if lastText != "" {
-		result.Text = lastText
-		return result, nil
-	}
+	c.MergeApplyAndEmitArtifacts(result, opts)
+	// 仅当 final 通道正文已完整时才跳过 WS catchup（避免未出 JSON 就 handoff）
+	result.bodyStreamFromSSE = result.assistantFinalText != ""
 
-	// Image generation scenario: conversation-turn topic carries streaming thinking (delta),
-	// conversation-update carries snapshots and image asset_pointers
-	if !c.DisableAutoImage && result.ImageTaskID != "" && wsConn != nil && result.ConversationID != "" {
-		if handoffTopicID != "" {
-			c.logf("[image-ws] Subscribing to %s and listening for conversation-update...", handoffTopicID)
-			if err := c.subscribeWSImageCombined(wsConn, handoffTopicID, result.ConversationID, result, &lastText, handler); err != nil {
-				c.logf("[image-ws] ws ended: %v", err)
-			}
+	if handoffTopicID != "" && wsConn != nil {
+		c.logf("[handoff] 订阅 WebSocket topic: %s", handoffTopicID)
+		var err error
+		// 生图：WS 内继续收 delta / conversation-update，直到出现 image_asset_pointer（不轮询 conversation API）
+		if !c.DisableAutoImage && result.ExpectGeneratedImages && result.ImageTaskID != "" {
+			err = c.subscribeWSImageCombined(wsConn, handoffTopicID, result.ConversationID, result, opts, &lastText, handler)
 		} else {
-			c.logf("[image-ws] Listening on WebSocket conversation-update for image progress...")
-			if err := c.subscribeWSConvUpdate(wsConn, result.ConversationID, result, handler); err != nil {
-				c.logf("[image-ws] ws listening ended: %v", err)
-			}
+			err = c.subscribeWSStream(wsConn, handoffTopicID, result, opts, &lastText, handler)
 		}
-	} else if handoffTopicID != "" && wsConn != nil {
-		// Normal text scenario: continue streaming via topic SSE
-		c.logf("[handoff] Subscribing to WebSocket topic: %s", handoffTopicID)
-		if err := c.subscribeWSStream(wsConn, handoffTopicID, result, &lastText, handler); err != nil {
+		if err != nil {
 			return nil, fmt.Errorf("ws stream: %w", err)
 		}
+		c.MergeApplyAndEmitArtifacts(result, opts)
+		if result.ExpectGeneratedImages {
+			if result.HasDalleGeneratedOutput() {
+				c.logf("[artifact] 生图 file_id: %v", result.ImageFileIDs)
+			} else if len(result.ImageFileIDs) > 0 {
+				c.logf("[image-ws] 无 DALL·E 产出（勿将用户参考图 file_id 当作生图结果）: %v", result.ImageFileIDs)
+			} else if result.imageAsyncTaskActive {
+				c.logf("[image-ws] async 生图任务已启动但 WS 未收到带 gen_id 的图片更新")
+			}
+		}
 	}
 
-	result.Text = lastText
+	// 生图成功且有 DALL·E 产出时清除排队提示文字
+	if result.ExpectGeneratedImages && result.HasDalleGeneratedOutput() {
+		lastText = ""
+		result.assistantFinalText = ""
+	}
+	if result.assistantFinalText != "" {
+		result.Text = result.assistantFinalText
+	} else {
+		result.Text = lastText
+	}
 	return result, nil
 }
 
-// parseWSFrames parses WebSocket text frames into a frame list (supports JSON array or single object).
+func (c *Client) noteConversationID(result *ChatResult, opts ChatOptions, evt map[string]interface{}) {
+	if result == nil || evt == nil {
+		return
+	}
+	cid, ok := evt["conversation_id"].(string)
+	if !ok || cid == "" {
+		return
+	}
+	prev := result.ConversationID
+	result.ConversationID = cid
+	if prev != cid && opts.OnConversationID != nil {
+		opts.OnConversationID(cid)
+	}
+}
+
+// parseWSFrames 将 WebSocket 文本帧解析为帧列表（支持 JSON 数组或单对象）
 func parseWSFrames(raw []byte) []map[string]interface{} {
 	if len(raw) == 0 {
 		return nil
@@ -521,68 +464,201 @@ func parseWSFrames(raw []byte) []map[string]interface{} {
 	return []map[string]interface{}{single}
 }
 
-// processConvUpdatePayload processes a conversation-update payload:
-// outputs analysis text, and if an image is found, writes result.ImageFileID and returns true.
-func (c *Client) processConvUpdatePayload(payload map[string]interface{}, result *ChatResult, handler StreamHandler) bool {
+func (c *Client) bumpImageGenActivity(result *ChatResult) {
+	if result == nil {
+		return
+	}
+	result.lastImageGenActivityAt = time.Now().UnixNano()
+}
+
+func isImageAsyncWSUpdate(updateType string) bool {
+	if strings.HasPrefix(updateType, "async-task-") {
+		return true
+	}
+	switch updateType {
+	case "add-messages", "insert-message", "update-message":
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *Client) trackImageAsyncTaskUpdate(result *ChatResult, updateType string) {
+	if result == nil || updateType == "" || !isImageAsyncWSUpdate(updateType) {
+		return
+	}
+	// 不在此处 bump：add-messages 刷屏会导致 idle 永不满足；仅在新 file_id 修订时 bump
+	switch updateType {
+	case "async-task-start":
+		result.imageAsyncTaskPending++
+		result.imageAsyncTaskActive = true
+		c.logf("[image-ws][async] start pending=%d", result.imageAsyncTaskPending)
+	case "async-task-complete", "async-task-end", "async-task-finished", "async-task-stop", "async-task-done", "async-task-success":
+		result.imageGenAsyncCompleteSeen = true
+		if result.imageAsyncTaskPending > 0 {
+			result.imageAsyncTaskPending--
+		}
+		if result.imageAsyncTaskPending <= 0 {
+			result.imageAsyncTaskPending = 0
+			result.imageAsyncTaskActive = false
+		}
+		c.logf("[image-ws][async] complete type=%s pending=%d active=%v", updateType, result.imageAsyncTaskPending, result.imageAsyncTaskActive)
+	default:
+		// add-messages / update-message：仅刷新活动时间，不增加 pending（避免无 complete 时永久卡住）
+		c.logf("[image-ws][async] progress type=%s pending=%d active=%v", updateType, result.imageAsyncTaskPending, result.imageAsyncTaskActive)
+	}
+}
+
+// handleSetConversationAsyncStatus 网页端生图结束时常见：conversation_async_status=4（见 testdata ws.ndjson）。
+func (c *Client) handleSetConversationAsyncStatus(payload map[string]interface{}, result *ChatResult) {
+	uc, _ := payload["update_content"].(map[string]interface{})
+	status := -1
+	switch v := uc["conversation_async_status"].(type) {
+	case float64:
+		status = int(v)
+	case int:
+		status = v
+	}
+	c.logf("[image-ws][async] set-conversation-async-status status=%d", status)
+	// 抓包中完成态为 4；其它值仅记录，避免误判
+	if status == 4 {
+		result.imageGenConvAsyncStatusDone = true
+		result.imageGenAsyncCompleteSeen = true
+		result.imageAsyncTaskPending = 0
+		result.imageAsyncTaskActive = false
+		result.imageGenConvStatusAt = time.Now().UnixNano()
+		c.logf("[image-ws][async] 生图任务完成（async_status=4），将在本批 WS 处理结束后返回客户端")
+	}
+}
+
+// processConvUpdatePayload 处理 conversation-update 的 payload（生图可多图，不在此结束 WS）。
+func (c *Client) processConvUpdatePayload(payload map[string]interface{}, result *ChatResult, opts ChatOptions, handler StreamHandler) {
+	result.ExpectGeneratedImages = IsGeneratedImageTurn(result.ArtifactSignals, opts)
+	updateType, _ := payload["update_type"].(string)
+	if updateType == "set-conversation-async-status" {
+		c.handleSetConversationAsyncStatus(payload, result)
+	}
+	c.trackImageAsyncTaskUpdate(result, updateType)
+	summary := summarizeConvUpdatePayload(payload)
+	if summary != "" {
+		c.logf("[image-ws][evt] %s pending=%d slots=%d", summary, result.imageAsyncTaskPending, len(result.imageSlots))
+	}
+	if updateType != "" && !isImageAsyncWSUpdate(updateType) {
+		lower := strings.ToLower(updateType)
+		if strings.Contains(lower, "complete") || strings.Contains(lower, "end") || strings.Contains(lower, "finish") {
+			c.logf("[image-ws][evt] 未识别的结束类事件 type=%s（请反馈完整 update_type）", updateType)
+		}
+	}
 	updateContent, ok := payload["update_content"].(map[string]interface{})
 	if !ok {
-		return false
+		return
+	}
+	if msg, ok := updateContent["message"].(map[string]interface{}); ok {
+		c.processConvUpdateMessage(msg, result, opts, handler, updateType)
+		return
 	}
 	messages, ok := updateContent["messages"].([]interface{})
 	if !ok {
-		return false
+		return
 	}
-
 	for _, msgI := range messages {
 		msg, ok := msgI.(map[string]interface{})
 		if !ok {
 			continue
 		}
-		author, _ := msg["author"].(map[string]interface{})
-		role, _ := author["role"].(string)
-		channel, _ := msg["channel"].(string)
-		msgContent, _ := msg["content"].(map[string]interface{})
-		parts, _ := msgContent["parts"].([]interface{})
+		c.processConvUpdateMessage(msg, result, opts, handler, updateType)
+	}
+}
 
-		if channel == "analysis" {
-			hasText := false
-			for _, part := range parts {
-				if text, ok := part.(string); ok && text != "" {
-					if handler != nil {
-						handler(text)
-					}
-					hasText = true
-				}
-			}
-			if hasText && handler != nil {
-				handler("\n")
-			}
-			continue
+// tryFinishImageGenWS 若已满足结束条件则收尾并退出 WS 循环。
+func (c *Client) tryFinishImageGenWS(result *ChatResult, opts ChatOptions, waitStart time.Time, tag string) (bool, error) {
+	if result == nil || !result.CanImageGenIdleExit() {
+		return false, nil
+	}
+	c.FinishImageGenWS(result, opts)
+	c.logf("[image-ws] 生图收齐 %d 槽（%s 已等待 %ds pending=%d convStatus=%v）",
+		len(result.imageSlots), tag, int(time.Since(waitStart).Seconds()),
+		result.imageAsyncTaskPending, result.imageGenConvAsyncStatusDone)
+	c.logImageGenDiag(result, "exit_ok_"+tag)
+	return true, nil
+}
+
+// FinishImageGenWS 生图 WS 结束或 HTTP 收尾：定稿各槽位并刷新 ImageFileIDs。
+func (c *Client) FinishImageGenWS(result *ChatResult, opts ChatOptions) {
+	if result == nil || !result.ExpectGeneratedImages {
+		return
+	}
+	c.FinalizeImageGenSlots(result, opts)
+	result.RebuildImageFileIDsFromSlots()
+}
+
+func (c *Client) processConvUpdateMessage(msg map[string]interface{}, result *ChatResult, opts ChatOptions, handler StreamHandler, wsUpdateType string) {
+	msgID, _ := msg["id"].(string)
+	if result.ExpectGeneratedImages {
+		for _, img := range parseGeneratedImagesFromMessage(msg) {
+			c.logf("[image-ws] %s slot gen=%s file=%s rev_path", wsUpdateType, img.GenID, img.FileID)
+			c.noteGeneratedImageRevision(result, opts, img, wsUpdateType)
 		}
-
-		if role == "tool" {
-			for _, part := range parts {
-				partMap, ok := part.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				if partMap["content_type"] == "image_asset_pointer" {
-					assetPtr, _ := partMap["asset_pointer"].(string)
-					if fileID := strings.TrimPrefix(assetPtr, "sediment://"); fileID != assetPtr && fileID != "" {
-						c.logf("[image-ws] Received image asset_pointer: %s", fileID)
-						result.ImageFileID = fileID
-						return true
+		if meta, ok := msg["metadata"].(map[string]interface{}); ok {
+			if refs, ok := meta["content_references"].([]interface{}); ok {
+				for _, refRaw := range refs {
+					ref, _ := refRaw.(map[string]interface{})
+					if ap, _ := ref["asset_pointer"].(string); ap != "" {
+						if fileID := extractFileID(ap); fileID != "" {
+							c.logf("[image-ws] content_reference asset: %s", fileID)
+							c.noteGeneratedImageRevision(result, opts, ParsedGeneratedImage{
+								FileID: fileID, MessageID: msgID,
+							}, wsUpdateType)
+						}
 					}
 				}
 			}
 		}
 	}
-	return false
+	author, _ := msg["author"].(map[string]interface{})
+	role, _ := author["role"].(string)
+	channel, _ := msg["channel"].(string)
+	msgContent, _ := msg["content"].(map[string]interface{})
+	parts, _ := msgContent["parts"].([]interface{})
+
+	if channel == "analysis" {
+		for _, part := range parts {
+			if text, ok := part.(string); ok && text != "" {
+				if handler != nil {
+					handler(text)
+				}
+			}
+		}
+		return
+	}
+
+	if role == "tool" {
+		name, _ := author["name"].(string)
+		status, _ := msg["status"].(string)
+		isImageTool := strings.Contains(name, "dalle") || strings.Contains(name, "image_gen")
+		if isImageTool && status == "in_progress" && !result.DalleStarted {
+			title := "正在生成图片，请稍候..."
+			for _, p := range parts {
+				if pStr, ok := p.(string); ok && pStr != "" {
+					title = "正在生成图片: " + pStr
+					break
+				}
+			}
+			opts.Artifacts.normalized().emit(StreamEvent{
+				Event: StreamEventArtifactPending,
+				Kind:  "generated_image",
+				Title: title,
+			})
+			if handler != nil {
+				handler("\n\n[" + title + "...]\n\n")
+			}
+			result.DalleStarted = true
+		}
+	}
 }
 
-// subscribeWSImageCombined handles image generation: subscribes to conversation-turn-* to consume
-// streaming delta, while also processing conversation-update to get the image.
-func (c *Client) subscribeWSImageCombined(conn *websocket.Conn, turnTopicID, conversationID string, result *ChatResult, lastText *string, handler StreamHandler) error {
+// subscribeWSImageCombined 生图：订阅 conversation-turn-* 消费流式 delta，同时处理 conversation-update 拿图片
+func (c *Client) subscribeWSImageCombined(conn *websocket.Conn, turnTopicID, conversationID string, result *ChatResult, opts ChatOptions, lastText *string, handler StreamHandler) error {
 	subID := nextWsID()
 	subMsg := []map[string]interface{}{
 		{"id": subID, "command": map[string]interface{}{
@@ -598,17 +674,70 @@ func (c *Client) subscribeWSImageCombined(conn *websocket.Conn, turnTopicID, con
 	var useDeltaEncoding bool
 	var currentEvent string
 
-	conn.SetReadDeadline(time.Now().Add(180 * time.Second))
+	const totalTimeout = 10 * time.Minute
+	const pingInterval = 25 * time.Second
+	const readDeadlineExt = 60 * time.Second
+	deadline := time.Now().Add(totalTimeout)
+
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(readDeadlineExt))
+		return nil
+	})
+	stopPing := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
+			case <-stopPing:
+				return
+			}
+		}
+	}()
+	defer close(stopPing)
+
+	conn.SetReadDeadline(time.Now().Add(readDeadlineExt))
 	defer conn.SetReadDeadline(time.Time{})
 
-	for result.ImageFileID == "" {
+	waitStart := time.Now()
+	lastProgress := time.Now()
+	lastDiag := time.Now()
+	c.logImageGenDiag(result, "ws_loop_start")
+	for {
+		if time.Now().After(deadline) {
+			c.logImageGenDiag(result, "timeout")
+			return fmt.Errorf("超过最大等待时间 %.0f 分钟，图片未返回", totalTimeout.Minutes())
+		}
+		if cleared := result.MaybeClearStaleImageAsyncPending(); cleared {
+			c.logf("[image-ws][async] 长期无 complete，已清除 stale pending（有图且 idle≥20s）")
+			c.logImageGenDiag(result, "stale_pending_cleared")
+		}
+		if done, err := c.tryFinishImageGenWS(result, opts, waitStart, "loop_top"); done {
+			return err
+		}
+		if time.Since(lastProgress) >= 15*time.Second {
+			c.logf("[image-ws] 等待生图中... 已等待 %ds | %s",
+				int(time.Since(waitStart).Seconds()), result.ImageGenExitBlockReason())
+			lastProgress = time.Now()
+		}
+		if time.Since(lastDiag) >= 30*time.Second {
+			c.logImageGenDiag(result, "heartbeat")
+			lastDiag = time.Now()
+		}
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("ws read: %w", err)
 		}
-		conn.SetReadDeadline(time.Now().Add(180 * time.Second))
+		readWait := readDeadlineExt
+		if result.imageGenConvAsyncStatusDone || result.imageGenAsyncCompleteSeen {
+			readWait = 5 * time.Second
+		}
+		conn.SetReadDeadline(time.Now().Add(readWait))
 
 		frames := parseWSFrames(raw)
+		c.logAndRecordWSFrames(raw, frames)
 		for _, frame := range frames {
 			fType, _ := frame["type"].(string)
 			switch fType {
@@ -620,9 +749,7 @@ func (c *Client) subscribeWSImageCombined(conn *websocket.Conn, turnTopicID, con
 				if cid, _ := payload["conversation_id"].(string); cid != conversationID {
 					continue
 				}
-				if c.processConvUpdatePayload(payload, result, handler) {
-					return nil
-				}
+				c.processConvUpdatePayload(payload, result, opts, handler)
 			case "reply":
 				reply, ok := frame["reply"].(map[string]interface{})
 				if !ok {
@@ -633,10 +760,16 @@ func (c *Client) subscribeWSImageCombined(conn *websocket.Conn, turnTopicID, con
 					continue
 				}
 				catchups, _ := reply["catchups"].([]interface{})
-				c.logf("[ws] reply catchups=%d", len(catchups))
-				for _, cu := range catchups {
-					if msg, ok := cu.(map[string]interface{}); ok {
-						_ = c.processWSMessage(msg, result, lastText, handler, &useDeltaEncoding, &currentEvent)
+				if result.bodyStreamFromSSE {
+					c.logf("[ws] skip catchups=%d (final body already from HTTP SSE)", len(catchups))
+				} else {
+					c.logf("[ws] reply catchups=%d", len(catchups))
+					for _, cu := range catchups {
+						if msg, ok := cu.(map[string]interface{}); ok {
+							if c.processWSMessage(msg, result, opts, lastText, handler, &useDeltaEncoding, &currentEvent) {
+								result.imageGenTurnDone = true
+							}
+						}
 					}
 				}
 			case "message":
@@ -644,60 +777,50 @@ func (c *Client) subscribeWSImageCombined(conn *websocket.Conn, turnTopicID, con
 				if frameTopic != turnTopicID {
 					continue
 				}
-				_ = c.processWSMessage(frame, result, lastText, handler, &useDeltaEncoding, &currentEvent)
+				if c.processWSMessage(frame, result, opts, lastText, handler, &useDeltaEncoding, &currentEvent) {
+					result.imageGenTurnDone = true
+					c.logf("[image-ws] turn topic 流已 [DONE]")
+				}
 			}
 		}
+		c.MergeApplyAndEmitArtifacts(result, opts)
+		if done, err := c.tryFinishImageGenWS(result, opts, waitStart, "after_frames"); done {
+			return err
+		}
 	}
-	return nil
 }
 
-// subscribeWSStream subscribes to a topic via an existing WebSocket connection and
-// consumes SSE data from encoded_item entries.
-//
-// Chrome DevTools Verification:
-//   1. After stream_handoff, switch to WS tab
-//   2. Look for subscribe message with topic_id from handoff
-//   3. Verify message format: {"id":5,"command":{"type":"subscribe","topic_id":"...","offset":"0"}}
-//   4. Monitor reply messages: look for "type":"reply"
-//   5. In reply.reply.catchups, find messages with payload.payload.encoded_item
-//   6. Decode encoded_item and verify SSE format:
-//      - event: delta
-//      - data: {"p":"/message/content/parts/0","o":"append","v":"text"}
-//   7. Look for final message with [DONE]
-//
-// What Might Change:
-//   - Subscribe format: New fields, different structure
-//   - Message wrapper: type:reply → different wrapper type
-//   - Catchups structure: catchups → messages, direct array
-//   - Encoded item location: payload.payload.encoded_item → different path
-//   - SSE format: Different event names, different data structure
-//   - Delta encoding: p/o/v → path/op/value, or full messages
-//
-// Detection with Anything-Analyzer:
-//   - Use "API 逆向" mode on WebSocket messages
-//   - Compare message structure with baseline
-//   - Set up alerts for new message types or formats
-//   - Monitor for changes in encoded_item parsing
-//
-// Detection with Mitmproxy:
-//   ```python
-//   def websocket_message(flow: http.HTTPFlow):
-//       if flow.websocket:
-//           for msg in flow.websocket.messages:
-//               if not msg.from_client and "encoded_item" in msg.text:
-//                   # Parse and check SSE events
-//                   import json
-//                   data = json.loads(msg.text)
-//                   # Navigate to encoded_item (path may change)
-//                   # Check for new event types
-//   ```
-//
-// Format Migration Examples:
-//   1. Catchups array → messages array: Update field access
-//   2. Path change: payload.payload.encoded_item → payload.encoded_item
-//   3. Delta format: p/o/v → path/op/value: Update processDeltaSSE
-//   4. New event type: event:thinking_start → Add handler
-func (c *Client) subscribeWSStream(conn *websocket.Conn, topicID string, result *ChatResult, lastText *string, handler StreamHandler) error {
+func imageFileIDSeen(ids []string, id string) bool {
+	for _, x := range ids {
+		if x == id {
+			return true
+		}
+	}
+	return false
+}
+
+// logAndRecordWSFrames 打印并可选落盘 WebSocket 帧（stream-capture 写 ws.ndjson）。
+func (c *Client) logAndRecordWSFrames(raw []byte, frames []map[string]interface{}) {
+	rawStr := string(raw)
+	hasImg := strings.Contains(rawStr, "sediment://") || strings.Contains(rawStr, "image_asset_pointer")
+	if len(frames) == 0 {
+		c.logf("[ws-frame] (unparsed) raw_len=%d has_image_ref=%v", len(raw), hasImg)
+		if c.StreamRecorder != nil {
+			c.StreamRecorder.RecordWS("", raw)
+		}
+		return
+	}
+	for _, frame := range frames {
+		fType, _ := frame["type"].(string)
+		c.logf("[ws-frame] type=%s raw_len=%d has_image_ref=%v", fType, len(raw), hasImg)
+		if c.StreamRecorder != nil {
+			c.StreamRecorder.RecordWS(fType, raw)
+		}
+	}
+}
+
+// subscribeWSStream 通过已有 WebSocket 连接订阅 topic 并消费 encoded_item 里的 SSE 数据
+func (c *Client) subscribeWSStream(conn *websocket.Conn, topicID string, result *ChatResult, opts ChatOptions, lastText *string, handler StreamHandler) error {
 	subID := nextWsID()
 	subMsg := []map[string]interface{}{
 		{"id": subID, "command": map[string]interface{}{
@@ -743,13 +866,23 @@ func (c *Client) subscribeWSStream(conn *websocket.Conn, topicID string, result 
 					continue
 				}
 				catchups, _ := reply["catchups"].([]interface{})
-				c.logf("[ws] reply catchups=%d", len(catchups))
-				for _, cu := range catchups {
-					if msg, ok := cu.(map[string]interface{}); ok {
-						d := c.processWSMessage(msg, result, lastText, handler, &useDeltaEncoding, &currentEvent)
-						if d {
-							done = true
+				if result.bodyStreamFromSSE && !result.ExpectGeneratedImages {
+					c.logf("[ws] skip catchups=%d (final body already from HTTP SSE)", len(catchups))
+					done = true
+				} else {
+					c.logf("[ws] reply catchups=%d", len(catchups))
+					for _, cu := range catchups {
+						if msg, ok := cu.(map[string]interface{}); ok {
+							d := c.processWSMessage(msg, result, opts, lastText, handler, &useDeltaEncoding, &currentEvent)
+							if d {
+								done = true
+							}
 						}
+					}
+					// catchup 含完整流但无 [DONE] 标记时，正文已到齐即可结束
+					if !done && result.assistantFinalText != "" {
+						c.logf("[ws] catchups done, final len=%d", len([]rune(result.assistantFinalText)))
+						done = true
 					}
 				}
 				continue
@@ -760,8 +893,10 @@ func (c *Client) subscribeWSStream(conn *websocket.Conn, topicID string, result 
 				if frameTopic != topicID {
 					continue
 				}
-				d := c.processWSMessage(frame, result, lastText, handler, &useDeltaEncoding, &currentEvent)
+				d := c.processWSMessage(frame, result, opts, lastText, handler, &useDeltaEncoding, &currentEvent)
 				if d {
+					done = true
+				} else if result.assistantFinalText != "" {
 					done = true
 				}
 			}
@@ -771,18 +906,60 @@ func (c *Client) subscribeWSStream(conn *websocket.Conn, topicID string, result 
 	return nil
 }
 
-// subscribeWSConvUpdate listens for WebSocket conversation-update messages
-// (image scenario, when no turn topic is available).
-func (c *Client) subscribeWSConvUpdate(conn *websocket.Conn, conversationID string, result *ChatResult, handler StreamHandler) error {
-	conn.SetReadDeadline(time.Now().Add(180 * time.Second))
+// subscribeWSConvUpdate 监听 WebSocket 的 conversation-update 消息（生图场景，无 turn topic 时）
+// 通过定期 Ping 心跳保活连接，最长等待 10 分钟。
+func (c *Client) subscribeWSConvUpdate(conn *websocket.Conn, conversationID string, result *ChatResult, opts ChatOptions, handler StreamHandler) error {
+	const totalTimeout = 10 * time.Minute
+	const pingInterval = 25 * time.Second
+	const readDeadlineExt = 60 * time.Second
+
+	deadline := time.Now().Add(totalTimeout)
+
+	// Pong handler：收到服务端 pong 后重置读 deadline
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(readDeadlineExt))
+		return nil
+	})
+
+	// 心跳 goroutine：每 25s 发一次 Ping
+	stopPing := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+					return
+				}
+			case <-stopPing:
+				return
+			}
+		}
+	}()
+	defer close(stopPing)
+
+	conn.SetReadDeadline(time.Now().Add(readDeadlineExt))
 	defer conn.SetReadDeadline(time.Time{})
 
+	waitStart := time.Now()
 	for {
+		if time.Now().After(deadline) {
+			return fmt.Errorf("超过最大等待时间 %.0f 分钟，图片未返回", totalTimeout.Minutes())
+		}
+		if done, err := c.tryFinishImageGenWS(result, opts, waitStart, "conv_loop_top"); done {
+			return err
+		}
+
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
 			return fmt.Errorf("ws read: %w", err)
 		}
-		conn.SetReadDeadline(time.Now().Add(180 * time.Second))
+		readWait := readDeadlineExt
+		if result.imageGenConvAsyncStatusDone || result.imageGenAsyncCompleteSeen {
+			readWait = 5 * time.Second
+		}
+		conn.SetReadDeadline(time.Now().Add(readWait))
 
 		for _, frame := range parseWSFrames(raw) {
 			if fType, _ := frame["type"].(string); fType != "conversation-update" {
@@ -795,16 +972,17 @@ func (c *Client) subscribeWSConvUpdate(conn *websocket.Conn, conversationID stri
 			if cid, _ := payload["conversation_id"].(string); cid != conversationID {
 				continue
 			}
-			if c.processConvUpdatePayload(payload, result, handler) {
-				return nil
-			}
+			c.processConvUpdatePayload(payload, result, opts, handler)
+		}
+		c.MergeApplyAndEmitArtifacts(result, opts)
+		if done, err := c.tryFinishImageGenWS(result, opts, waitStart, "conv_after_frames"); done {
+			return err
 		}
 	}
 }
 
-// processWSMessage processes a single WebSocket message frame.
-// Returns true when the stream is done ([DONE] received).
-func (c *Client) processWSMessage(frame map[string]interface{}, result *ChatResult, lastText *string, handler StreamHandler, useDeltaEncoding *bool, currentEvent *string) bool {
+// processWSMessage 处理单条 WebSocket message 帧，返回 true 表示流结束
+func (c *Client) processWSMessage(frame map[string]interface{}, result *ChatResult, opts ChatOptions, lastText *string, handler StreamHandler, useDeltaEncoding *bool, currentEvent *string) bool {
 	payload1, ok := frame["payload"].(map[string]interface{})
 	if !ok {
 		return false
@@ -818,7 +996,7 @@ func (c *Client) processWSMessage(frame map[string]interface{}, result *ChatResu
 		return false
 	}
 
-	// encoded_item is SSE-formatted text; parse it line by line
+	// encoded_item 是 SSE 格式文本，逐行解析
 	for _, line := range strings.Split(encoded, "\n") {
 		line = strings.TrimRight(line, "\r")
 
@@ -846,10 +1024,10 @@ func (c *Client) processWSMessage(frame map[string]interface{}, result *ChatResu
 			*currentEvent = ""
 			continue
 		}
+		result.ArtifactSignals = MergeSignals(result.ArtifactSignals, ExtractSignalsFromJSON(evt))
+		c.MergeApplyAndEmitArtifacts(result, opts)
 
-		if cid, ok := evt["conversation_id"].(string); ok && cid != "" {
-			result.ConversationID = cid
-		}
+		c.noteConversationID(result, opts, evt)
 
 		evtType, _ := evt["type"].(string)
 		if evtType == "resume_conversation_token" || evtType == "stream_handoff" {
@@ -868,7 +1046,7 @@ func (c *Client) processWSMessage(frame map[string]interface{}, result *ChatResu
 	return false
 }
 
-// parseStreamHandoff extracts the resume_sse_endpoint topic_id from a stream_handoff event.
+// parseStreamHandoff 从 stream_handoff 事件中提取 resume_sse_endpoint 的 topic_id
 func parseStreamHandoff(evt map[string]interface{}) (bool, string) {
 	options, ok := evt["options"].([]interface{})
 	if !ok {
@@ -887,8 +1065,7 @@ func parseStreamHandoff(evt map[string]interface{}) (bool, string) {
 	return false, ""
 }
 
-// checkImageTaskID extracts the image task ID from an SSE event
-// (supports both legacy image_gen_task_id and new ghostrider format).
+// checkImageTaskID 从 SSE 事件中提取图片任务 ID（兼容旧版 image_gen_task_id 和新版 ghostrider）
 func checkImageTaskID(evt map[string]interface{}, result *ChatResult) {
 	extractFromMeta := func(meta map[string]interface{}) {
 		if tid, ok := meta["image_gen_task_id"].(string); ok && tid != "" {
@@ -911,44 +1088,144 @@ func checkImageTaskID(evt map[string]interface{}, result *ChatResult) {
 	}
 }
 
-// processDeltaSSE processes delta-encoding SSE events.
-// ChatGPT delta format has multiple variants:
-//
-//	A) Top-level patch: {"p":"/message/content/parts/0","o":"append","v":"text"}
-//	B) Simple append: {"v":"text"} (p/o omitted, implicit append to parts/0)
-//	C) Message object add: {"p":"","o":"add","v":{"message":{...}}}
-//	D) Completion patch array: {"p":"","o":"patch","v":[...patches...]}
+func (result *ChatResult) noteAssistantChannel(channel string) {
+	if channel == "analysis" {
+		result.sawAnalysisChannel = true
+	}
+	if channel != "" {
+		result.deltaChannel = channel
+	}
+}
+
+func (result *ChatResult) isAnalysisStream() bool {
+	if result.deltaChannel == "analysis" {
+		return true
+	}
+	return result.deltaChannel == "" && result.sawAnalysisChannel
+}
+
+func (c *Client) emitThinkingDelta(result *ChatResult, text string, handler StreamHandler) {
+	if text == "" {
+		return
+	}
+	result.ThinkingText += text
+	if handler != nil {
+		handler("\x00THINK\x00" + text)
+	}
+}
+
+func (result *ChatResult) shouldSkipImageGenToolBodyDelta(text string) bool {
+	if !result.ExpectGeneratedImages {
+		return false
+	}
+	if result.deltaChannel == "commentary" {
+		return true
+	}
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return false
+	}
+	// ImageGen 工具参数 JSON 碎片（勿下发给客户端）
+	if strings.HasPrefix(t, "{") || strings.HasPrefix(t, ",") || strings.Contains(t, "referenced_image_ids") {
+		return true
+	}
+	return false
+}
+
+func (c *Client) emitBodyDelta(result *ChatResult, lastText *string, text string, handler StreamHandler) {
+	if text == "" || result.shouldSkipImageGenToolBodyDelta(text) {
+		return
+	}
+	newText := *lastText + text
+	if newText == *lastText {
+		return
+	}
+	toEmit := newText[result.emittedBodyLen:]
+	*lastText = newText
+	if result.deltaChannel == "final" {
+		result.assistantFinalText = newText
+	}
+	if len(toEmit) == 0 {
+		return
+	}
+	result.emittedBodyLen = len(newText)
+	if handler != nil {
+		handler(toEmit)
+	}
+}
+
+func (c *Client) emitBodyFull(result *ChatResult, lastText *string, text, channel string, handler StreamHandler) {
+	if text == "" {
+		return
+	}
+	if text == *lastText {
+		return
+	}
+	if len(text) < len(*lastText) && strings.HasPrefix(*lastText, text) {
+		return
+	}
+	if len(text) <= len(*lastText) {
+		return
+	}
+	*lastText = text
+	if channel == "final" {
+		result.assistantFinalText = text
+		c.logf("[reply-final] channel=final len=%d", len([]rune(text)))
+	}
+	toEmit := text[result.emittedBodyLen:]
+	if len(toEmit) == 0 {
+		return
+	}
+	result.emittedBodyLen = len(text)
+	if handler != nil {
+		handler(toEmit)
+	}
+}
+
+// processDeltaSSE 处理 delta 编码模式的 SSE 事件
+// ChatGPT delta 格式有多种变体：
+//  A) 顶层 patch：{"p":"/message/content/parts/0","o":"append","v":"text"}
+//  B) 简写 append：{"v":"text"}（省略 p/o，隐含对 parts/0 的追加）
+//  C) 消息对象 add：{"p":"","o":"add","v":{"message":{...}}}
+//  D) 完成 patch 数组：{"p":"","o":"patch","v":[...patches...]}
 func (c *Client) processDeltaSSE(evt map[string]interface{}, result *ChatResult, lastText *string, handler StreamHandler) {
 	pPath, _ := evt["p"].(string)
 	pOp, _ := evt["o"].(string)
 
-	// Format A: top-level append patch
-	if pPath == "/message/content/parts/0" && pOp == "append" {
-		if text, ok := evt["v"].(string); ok && text != "" {
-			*lastText += text
-			if handler != nil {
-				handler(text)
-			}
+	// 格式 A：顶层 append patch
+	if pOp == "append" {
+		if result.ExpectGeneratedImages && (pPath == "/message/content/text" || strings.HasPrefix(pPath, "/message/content/text")) {
+			return
 		}
-		return
-	}
-
-	v := evt["v"]
-
-	// Format B: only v field, and it's a string → implicit append
-	_, hasP := evt["p"]
-	_, hasO := evt["o"]
-	if !hasP && !hasO {
-		if text, ok := v.(string); ok && text != "" {
-			*lastText += text
-			if handler != nil {
-				handler(text)
+		if pPath == "/message/content/parts/0" {
+			if text, ok := evt["v"].(string); ok && text != "" {
+				if result.isAnalysisStream() {
+					c.emitThinkingDelta(result, text, handler)
+				} else {
+					c.emitBodyDelta(result, lastText, text, handler)
+				}
 			}
 			return
 		}
 	}
 
-	// Format C: v is a map containing message (message object init or final channel)
+	v := evt["v"]
+
+	// 格式 B：只有 v 字段，且是字符串 → 隐含 append
+	_, hasP := evt["p"]
+	_, hasO := evt["o"]
+	if !hasP && !hasO {
+		if text, ok := v.(string); ok && text != "" {
+			if result.isAnalysisStream() {
+				c.emitThinkingDelta(result, text, handler)
+			} else {
+				c.emitBodyDelta(result, lastText, text, handler)
+			}
+			return
+		}
+	}
+
+	// 格式 C：v 是包含 message 的 map（消息对象初始化或 final channel）
 	if vMap, ok := v.(map[string]interface{}); ok {
 		if msgRaw, exists := vMap["message"]; exists {
 			if msg, ok := msgRaw.(map[string]interface{}); ok {
@@ -958,47 +1235,77 @@ func (c *Client) processDeltaSSE(evt map[string]interface{}, result *ChatResult,
 
 				if author == "assistant" && msgID != "" {
 					result.LastAssistantMsgID = msgID
+					result.noteAssistantChannel(channel)
+
+					// content_type="thoughts"：解析思考步骤（summary + content）
+					if content, ok := msg["content"].(map[string]interface{}); ok {
+						if ct, _ := content["content_type"].(string); ct == "thoughts" {
+							if thoughts, ok := content["thoughts"].([]interface{}); ok {
+								c.extractThoughts(thoughts, result, handler)
+							}
+						}
+					}
 				}
 				if author == "tool" {
 					if meta, ok := msg["metadata"].(map[string]interface{}); ok {
 						if tid, ok := meta["image_gen_task_id"].(string); ok && tid != "" {
 							result.ImageTaskID = tid
 						}
-						// New ghostrider async image generation: no image_gen_task_id;
-						// use "ghostrider" as the trigger flag
+						// 新版 ghostrider 异步生图：没有 image_gen_task_id，用 "ghostrider" 作为触发标志
 						if result.ImageTaskID == "" {
 							if _, ok := meta["ghostrider"]; ok {
 								result.ImageTaskID = "ghostrider"
 							}
 						}
+						// 思考模型：reasoning_title 是每步工具调用的思考标题
+						if title, ok := meta["reasoning_title"].(string); ok && title != "" {
+							// 同时取 content.parts[0] 作为执行输出
+							execOutput := ""
+							if content, ok := msg["content"].(map[string]interface{}); ok {
+								if text, ok := content["text"].(string); ok {
+									execOutput = text
+								} else if parts, ok := content["parts"].([]interface{}); ok && len(parts) > 0 {
+									if s, ok := parts[0].(string); ok {
+										execOutput = s
+									}
+								}
+							}
+							if handler != nil {
+								payload := title
+								if execOutput != "" {
+									payload += "\x1F" + execOutput // \x1F 单元分隔符
+								}
+								handler("\x00THINK_STEP\x00" + payload)
+							}
+						}
 					}
 				}
-				// Full text on the final channel (usually a final confirmation;
-				// at this point lastText should already have accumulated the complete text)
+				// final channel 上的完整文本（网页端可见的最终 JSON/正文）
 				if author == "assistant" && channel == "final" {
-					if text := getFirstStringPart(msg); text != "" && len(text) > len(*lastText) {
-						delta := text[len(*lastText):]
-						*lastText = text
-						if handler != nil && delta != "" {
-							handler(delta)
-						}
+					if text := getFirstStringPart(msg); text != "" {
+						result.noteAssistantChannel("final")
+						c.emitBodyFull(result, lastText, text, "final", handler)
 					}
 				}
 			}
 		}
 	}
 
-	// Format D: v is a patches array (batch patch)
+	// 格式 D：v 是 patches 数组（批量 patch）
 	if patches, ok := v.([]interface{}); ok {
 		for _, p := range patches {
 			if patch, ok := p.(map[string]interface{}); ok {
 				pp, _ := patch["p"].(string)
 				po, _ := patch["o"].(string)
+				if result.ExpectGeneratedImages && po == "append" && (pp == "/message/content/text" || strings.HasPrefix(pp, "/message/content/text")) {
+					continue
+				}
 				if pp == "/message/content/parts/0" && po == "append" {
 					if text, ok := patch["v"].(string); ok && text != "" {
-						*lastText += text
-						if handler != nil {
-							handler(text)
+						if result.isAnalysisStream() {
+							c.emitThinkingDelta(result, text, handler)
+						} else {
+							c.emitBodyDelta(result, lastText, text, handler)
 						}
 					}
 				}
@@ -1007,7 +1314,7 @@ func (c *Client) processDeltaSSE(evt map[string]interface{}, result *ChatResult,
 	}
 }
 
-// processFullSSE processes non-delta-encoding SSE events.
+// processFullSSE 处理非 delta 编码模式的 SSE 事件
 func (c *Client) processFullSSE(evt map[string]interface{}, result *ChatResult, lastText *string, handler StreamHandler) {
 	msgRaw, exists := evt["message"]
 	if !exists {
@@ -1019,25 +1326,192 @@ func (c *Client) processFullSSE(evt map[string]interface{}, result *ChatResult, 
 	}
 
 	author := getNestedString(msg, "author", "role")
+	channel, _ := msg["channel"].(string)
 	msgID, _ := msg["id"].(string)
 
 	if author == "assistant" && msgID != "" {
 		result.LastAssistantMsgID = msgID
+
+		// content_type="thoughts"：解析思考步骤（summary + content）
+		if content, ok := msg["content"].(map[string]interface{}); ok {
+			if ct, _ := content["content_type"].(string); ct == "thoughts" {
+				if thoughts, ok := content["thoughts"].([]interface{}); ok {
+					c.extractThoughts(thoughts, result, handler)
+				}
+			}
+		}
 	}
 
 	if meta, ok := msg["metadata"].(map[string]interface{}); ok {
 		if tid, ok := meta["image_gen_task_id"].(string); ok && tid != "" {
 			result.ImageTaskID = tid
 		}
+		// 思考模型：tool 消息中的 reasoning_title 是每步思考标题
+		if author == "tool" {
+			if title, ok := meta["reasoning_title"].(string); ok && title != "" {
+				execOutput := ""
+				if content, ok := msg["content"].(map[string]interface{}); ok {
+					if text, ok := content["text"].(string); ok {
+						execOutput = text
+					} else if parts, ok := content["parts"].([]interface{}); ok && len(parts) > 0 {
+						if s, ok := parts[0].(string); ok {
+							execOutput = s
+						}
+					}
+				}
+				if handler != nil {
+					payload := title
+					if execOutput != "" {
+						payload += "\x1F" + execOutput
+					}
+					handler("\x00THINK_STEP\x00" + payload)
+				}
+			}
+		}
 	}
 
 	if author == "assistant" {
-		if text := getFirstStringPart(msg); text != "" && len(text) > len(*lastText) {
-			delta := text[len(*lastText):]
-			if handler != nil {
-				handler(delta)
+		text := getFirstStringPart(msg)
+		if text == "" {
+			return
+		}
+		result.noteAssistantChannel(channel)
+		if channel == "analysis" {
+			if len(text) > len(result.ThinkingText) {
+				c.emitThinkingDelta(result, text[len(result.ThinkingText):], handler)
+				result.ThinkingText = text
 			}
-			*lastText = text
+		} else if channel == "final" {
+			c.emitBodyFull(result, lastText, text, "final", handler)
+		} else if !result.sawAnalysisChannel {
+			c.emitBodyFull(result, lastText, text, channel, handler)
 		}
 	}
+}
+
+
+// fetchTextdocs 调用 textdocs API 获取思考步骤的详细内容
+// textdocs 返回一个对象数组，每个对象包含 type、thought（含 summary/content）等字段
+func (c *Client) fetchTextdocs(conversationID string) ([]ThinkStep, error) {
+	apiPath := "/backend-api/conversation/" + conversationID + "/textdocs"
+	resp, err := c.httpClient.R().
+		SetHeaders(map[string]string{
+			"x-openai-target-path":  apiPath,
+			"x-openai-target-route": "/backend-api/conversation/{conversation_id}/textdocs",
+		}).
+		Get(apiPath)
+	if err != nil {
+		return nil, fmt.Errorf("textdocs 请求失败: %w", err)
+	}
+	if resp.IsErrorState() {
+		return nil, fmt.Errorf("textdocs 返回错误: status=%d body=%s", resp.StatusCode, resp.String()[:min(200, len(resp.String()))])
+	}
+
+	// textdocs 返回格式：{"textdocs": [{"type": 0, "thought": {"summary": "...", "content": "...", ...}}, ...]}
+	// 或直接是数组
+	rawBody := resp.String()
+	c.logf("[textdocs] 原始响应 status=%d len=%d snippet=%s", resp.StatusCode, len(rawBody), rawBody[:min(500, len(rawBody))])
+
+	var rawData interface{}
+	if err := json.Unmarshal(resp.Bytes(), &rawData); err != nil {
+		return nil, fmt.Errorf("textdocs 解析失败: %w", err)
+	}
+
+	var chunks []interface{}
+	switch v := rawData.(type) {
+	case map[string]interface{}:
+		// 可能是 {"textdocs": [...]} 或 {"chunks": [...]}
+		for _, key := range []string{"textdocs", "chunks", "items", "data"} {
+			if arr, ok := v[key].([]interface{}); ok {
+				chunks = arr
+				break
+			}
+		}
+		if chunks == nil {
+			c.logf("[textdocs] 未知顶层结构, keys=%v", mapKeys(v))
+		}
+	case []interface{}:
+		chunks = v
+	}
+
+	var steps []ThinkStep
+	for _, chunkRaw := range chunks {
+		chunk, ok := chunkRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// type=0 是思考段落
+		chunkType, _ := chunk["type"].(float64)
+		if int(chunkType) != 0 {
+			continue
+		}
+		thought, ok := chunk["thought"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		summary, _ := thought["summary"].(string)
+		content, _ := thought["content"].(string)
+		if summary == "" && content == "" {
+			continue
+		}
+		steps = append(steps, ThinkStep{
+			Summary: summary,
+			Content: content,
+		})
+	}
+	return steps, nil
+}
+
+// extractThoughts 从 content_type="thoughts" 消息的 thoughts 数组中提取已完成的思考步骤。
+// SSE 流中的数组元素格式：{"summary": "...", "content": "...", "chunks": [...], "finished": true}
+// 每个 finished=true 的步骤通过 \x00THINK_STEP\x00 标记推送一次（summary\x1Fcontent），去重处理。
+func (c *Client) extractThoughts(thoughts []interface{}, result *ChatResult, handler StreamHandler) {
+	if result.seenThoughtKeys == nil {
+		result.seenThoughtKeys = make(map[string]bool)
+	}
+	for _, tRaw := range thoughts {
+		t, ok := tRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// SSE 格式：直接包含 summary, content, finished
+		finished, _ := t["finished"].(bool)
+		if !finished {
+			continue
+		}
+		summary, _ := t["summary"].(string)
+		content, _ := t["content"].(string)
+		if summary == "" {
+			continue
+		}
+		// 去重：同一个 summary 只推送一次
+		if result.seenThoughtKeys[summary] {
+			continue
+		}
+		result.seenThoughtKeys[summary] = true
+		result.ThinkSteps = append(result.ThinkSteps, ThinkStep{Summary: summary, Content: content})
+		c.logf("[thoughts] 新思考步骤: %s", summary)
+		if handler != nil {
+			payload := summary
+			if content != "" {
+				payload += "\x1F" + content
+			}
+			handler("\x00THINK_STEP\x00" + payload)
+		}
+	}
+}
+
+func mapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

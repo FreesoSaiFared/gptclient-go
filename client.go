@@ -15,8 +15,7 @@ const (
 	defaultModel       = "gpt-5-5-thinking"
 )
 
-// Client is a ChatGPT conversation client that encapsulates the full
-// Sentinel authentication + SSE conversation flow.
+// Client 是 ChatGPT 对话客户端，封装了完整的 Sentinel 认证 + SSE 对话流程。
 type Client struct {
 	httpClient  *req.Client
 	bearerToken string
@@ -36,16 +35,18 @@ type Client struct {
 	tempMode        bool
 	turnCount       int
 
-	// Logf is the log output function; set to nil to disable logging. Defaults to log.Printf.
+	// Logf 日志输出函数，设为 nil 可禁用日志。默认 log.Printf。
 	Logf LogFunc
 
-	// DisableAutoImage when true prevents Chat/ChatStream from blocking to wait for
-	// image downloads. Suitable for DLL/external call scenarios where the caller
-	// handles image downloading asynchronously.
+	// DisableAutoImage 设为 true 时，Chat/ChatStream 不会自动阻塞等待图片下载。
+	// 适合 DLL / 外部调用场景，由调用方自己异步处理图片下载。
 	DisableAutoImage bool
+
+	// StreamRecorder 非空时记录全部 SSE 事件（供 stream-capture 分析）。
+	StreamRecorder *StreamRecorder
 }
 
-// NewClient creates a new ChatGPT client.
+// NewClient 创建新的 ChatGPT 客户端
 func NewClient(cfg Config) *Client {
 	c := &Client{
 		bearerToken:     cfg.BearerToken,
@@ -64,55 +65,52 @@ func NewClient(cfg Config) *Client {
 		Logf:            log.Printf,
 	}
 
-	baseURL := orDefault(cfg.BaseURL, "https://chatgpt.com")
-
 	httpC := req.C().
-		SetBaseURL(baseURL).
-		SetCommonHeaders(c.commonHeaders())
-
-	if !cfg.DisableImpersonate {
-		httpC = httpC.ImpersonateChrome()
-	}
+		SetBaseURL("https://chatgpt.com").
+		SetCommonHeaders(c.commonHeaders()).
+		ImpersonateChrome()
 
 	c.httpClient = httpC
 	return c
 }
 
-// HTTPClient returns the underlying req.Client for advanced customization.
+// HTTPClient 返回底层 req.Client 以便高级自定义
 func (c *Client) HTTPClient() *req.Client {
 	return c.httpClient
 }
 
-// ResetSession resets the conversation context (starts a new conversation).
+// ResetSession 重置对话上下文（开始新对话）
 func (c *Client) ResetSession() {
 	c.conversationID = ""
 	c.parentMessageID = "client-created-root"
 	c.turnCount = 0
 }
 
-// SetModel switches the model.
+// SetModel 切换模型
 func (c *Client) SetModel(model string) { c.model = model }
 
-// GetModel returns the current model.
+// GetModel 获取当前模型
 func (c *Client) GetModel() string { return c.model }
 
-// SetBearerToken updates the bearer token used for authentication.
-// This is useful for refreshing an expired token without creating a new Client.
-func (c *Client) SetBearerToken(token string) { c.bearerToken = token }
-
-// SetTempMode sets temporary mode.
+// SetTempMode 设置临时模式
 func (c *Client) SetTempMode(enabled bool) { c.tempMode = enabled }
 
-// SetDisableAutoImage sets whether auto image downloading is disabled (for DLL use cases).
+// SetDisableAutoImage 设置是否禁用自动图片下载（DLL 场景使用）
 func (c *Client) SetDisableAutoImage(disabled bool) { c.DisableAutoImage = disabled }
 
-// SetConversationID restores to a specific conversation.
+// SetBearerToken 更新 Bearer Token（Session Token 刷新后调用）。
+func (c *Client) SetBearerToken(token string) {
+	c.bearerToken = token
+	c.httpClient.SetCommonHeader("Authorization", "Bearer "+token)
+}
+
+// SetConversationID 恢复到指定对话
 func (c *Client) SetConversationID(id string) { c.conversationID = id }
 
-// SetParentMessageID sets the parent message ID (to specify reply position).
+// SetParentMessageID 设置父消息 ID（用于指定回复位置）
 func (c *Client) SetParentMessageID(id string) { c.parentMessageID = id }
 
-// GetSessionInfo returns the current session state.
+// GetSessionInfo 获取当前会话状态
 func (c *Client) GetSessionInfo() SessionInfo {
 	return SessionInfo{
 		ConversationID:  c.conversationID,
@@ -129,52 +127,6 @@ func (c *Client) logf(format string, args ...interface{}) {
 	}
 }
 
-// commonHeaders generates the HTTP headers required for ChatGPT API requests.
-//
-// These headers mimic a Chrome browser on Windows to avoid detection.
-// They include authentication, browser fingerprinting, and client information.
-//
-// Chrome DevTools Verification:
-//   1. Open chatgpt.com → F12 → Network tab
-//   2. Click on any ChatGPT API request
-//   3. Compare Request Headers with this function's output
-//   4. Critical headers to verify:
-//      - Authorization: Bearer <jwt_token>
-//      - User-Agent: Must match current Chrome version
-//      - sec-ch-ua*: Client Hints headers (security detection)
-//      - oai-* headers: OpenAI-specific headers
-//      - Cookie: If cookies are enabled
-//
-// What Might Change:
-//   - User-Agent: Chrome version updates (147.0 → 148.0)
-//   - sec-ch-ua*: Client hints format changes, new headers added
-//   - oai-* headers: New OpenAI headers, name changes (oai-device-id → oai-device-id-v2)
-//   - Cookie format: New required cookies, cookie encryption
-//   - Build hash: Updates with new ChatGPT web client builds
-//   - Build number: Increments with each deployment
-//
-// Detection with Anything-Analyzer:
-//   - Use "安全审计" mode to detect new security headers
-//   - Monitor for 403 errors (often due to header mismatch)
-//   - Compare sec-ch-ua headers with latest Chrome version
-//   - Set up alerts for User-Agent version changes
-//
-// Detection with Mitmproxy:
-//   ```python
-//   def request(flow: http.HTTPFlow):
-//       if "chatgpt.com" in flow.request.pretty_host:
-//           # Check for new headers
-//           baseline_headers = ["Authorization", "User-Agent", "sec-ch-ua", "oai-device-id"]
-//           for header in flow.request.headers:
-//               if header not in baseline_headers and "oai-" in header:
-//                   ctx.log.warn(f"[NEW HEADER] {header}: {flow.request.headers[header]}")
-//   ```
-//
-// Browser Fingerprint Updates:
-//   - Update defaultUA when Chrome releases new versions
-//   - Update sec-ch-ua values to match Chrome version
-//   - Update buildHash from ChatGPT web client source
-//   - Update buildNumber from latest deployment
 func (c *Client) commonHeaders() map[string]string {
 	h := map[string]string{
 		"Authorization":               "Bearer " + c.bearerToken,

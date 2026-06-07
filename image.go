@@ -3,150 +3,96 @@ package sentinel
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"time"
+	"net/http"
+	"strings"
+
+	"github.com/imroc/req/v3"
 )
 
-// PollAndDownloadImage polls conversation details and downloads DALL-E generated images.
-//
-// Chrome DevTools Verification:
-//   1. Look for image generation: SSE event with image_gen_task_id
-//   2. After generation, look for: GET /backend-api/conversation/<id>
-//   3. Verify request headers: x-openai-target-path: /backend-api/conversation/{id}
-//   4. In response, look for mapping.<msg_id>.message.content.parts
-//   5. Find asset_pointer field: "sediment://file_<id>"
-//   6. Extract file_<id> and look for: GET /backend-api/files/download/file_<id>
-//   7. Verify response has download_url field
-//   8. Verify final download from download_url succeeds
-//
-// What Might Change:
-//   - Poll endpoint: /conversation/{id} → /v2/conversation/{id}
-//   - Asset pointer format: sediment://file_* → different prefix
-//   - Download endpoint: /files/download/{id} → /v2/files/download/{id}
-//   - Response structure: mapping → different structure
-//   - Download URL format: Different CDN or format
-//   - Image metadata: New fields, different structure
-//
-// Detection with Anything-Analyzer:
-//   - Use "API 逆向" mode on conversation polling
-//   - Monitor for new asset_pointer formats
-//   - Compare response structure with baseline
-//   - Set up alerts for download URL format changes
-//
-// Detection with Mitmproxy:
-//   ```python
-//   def response(flow: http.HTTPFlow):
-//       if "conversation/" in flow.request.path and flow.request.method == "GET":
-//           response = json.loads(flow.response.text)
-//           # Check for new image formats
-//           if "mapping" not in response:
-//               ctx.log.warn("[CHANGE] mapping field missing from conversation response")
-//   ```
-//
-// Format Migration:
-//   1. New asset pointer: Update extractFileID regex
-//   2. New response structure: Update mapping navigation logic
-//   3. New download endpoint: Update downloadImage function
-func (c *Client) PollAndDownloadImage(conversationID string) (string, error) {
-	c.logf("[image] Waiting for image generation...")
-	const maxAttempts = 30
-
-	for i := 0; i < maxAttempts; i++ {
-		if i < 5 {
-			time.Sleep(2 * time.Second)
-		} else {
-			time.Sleep(5 * time.Second)
-		}
-
-		resp, err := c.httpClient.R().
-			SetHeaders(map[string]string{
-				"Accept":                "*/*",
-				"Content-Type":          "application/json",
-				"x-openai-target-path":  fmt.Sprintf("/backend-api/conversation/%s", conversationID),
-				"x-openai-target-route": "/backend-api/conversation/{conversationId}",
-			}).
-			Get(fmt.Sprintf("/backend-api/conversation/%s", conversationID))
-		if err != nil || resp.StatusCode != 200 {
-			continue
-		}
-
-		var data map[string]interface{}
-		if err := json.Unmarshal(resp.Bytes(), &data); err != nil {
-			continue
-		}
-
-		mapping, ok := data["mapping"].(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		fileIDs := make(map[string]bool)
-		for _, nodeRaw := range mapping {
-			node, ok := nodeRaw.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			msg, ok := node["message"].(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			if content, ok := msg["content"].(map[string]interface{}); ok {
-				if ct, _ := content["content_type"].(string); ct == "multimodal_text" {
-					parts, _ := content["parts"].([]interface{})
-					for _, part := range parts {
-						if partMap, ok := part.(map[string]interface{}); ok {
-							if ap, ok := partMap["asset_pointer"].(string); ok {
-								if fid := extractFileID(ap); fid != "" {
-									fileIDs[fid] = true
-								}
-							}
-						}
-					}
-				}
-			}
-
-			if meta, ok := msg["metadata"].(map[string]interface{}); ok {
-				refs, _ := meta["content_references"].([]interface{})
-				for _, ref := range refs {
-					if refMap, ok := ref.(map[string]interface{}); ok {
-						if ap, ok := refMap["asset_pointer"].(string); ok {
-							if fid := extractFileID(ap); fid != "" {
-								fileIDs[fid] = true
-							}
-						}
-					}
-				}
-			}
-		}
-
-		for fid := range fileIDs {
-			fp, err := c.downloadImage(fid, conversationID)
-			if err == nil && fp != "" {
-				return fp, nil
-			}
-		}
-	}
-
-	c.logf("[image] Timed out, unable to get image")
-	return "", fmt.Errorf("image download timeout")
+// PollForImageFileID 已弃用：请使用 SSE 流中的 image_asset_pointer / ApplyArtifactsFromSignals。
+// 保留仅为兼容旧调用方。
+func (c *Client) PollForImageFileID(conversationID string) (string, error) {
+	_ = conversationID
+	return "", fmt.Errorf("PollForImageFileID 已弃用，请从 SSE 信号获取图片 file_id")
 }
 
-// DownloadImageByFileID downloads an image using a known file_id (extracted from WebSocket asset_pointer).
-func (c *Client) DownloadImageByFileID(fileID, conversationID string) (string, error) {
-	return c.downloadImage(fileID, conversationID)
-}
-
-// downloadImage downloads an image via file_id and saves it locally.
-func (c *Client) downloadImage(fileID, conversationID string) (string, error) {
-	if err := os.MkdirAll(c.imageDir, 0755); err != nil {
-		return "", err
+// ProxyImageByFileID 获取文件直链并代理直接将流输出到 http.ResponseWriter
+func (c *Client) ProxyImageByFileID(fileID, conversationID string, w interface{}, reqUserAgent string) error {
+	writer, ok := w.(http.ResponseWriter)
+	if !ok {
+		return fmt.Errorf("invalid http.ResponseWriter")
 	}
 
-	filename := fmt.Sprintf("dalle_%d.png", time.Now().UnixMilli())
-	fpath := filepath.Join(c.imageDir, filename)
+	apiPath := fmt.Sprintf("/backend-api/files/download/%s?conversation_id=%s&inline=false", fileID, conversationID)
+	resp, err := c.httpClient.R().
+		SetHeaders(map[string]string{
+			"Accept":                "*/*",
+			"Content-Type":          "application/json",
+			"x-openai-target-path":  apiPath,
+			"x-openai-target-route": "/backend-api/files/download/{fileId}",
+		}).
+		Get(apiPath)
+	if err != nil || resp.StatusCode != 200 {
+		return fmt.Errorf("download info failed: status=%d", resp.StatusCode)
+	}
 
+	var dr struct {
+		DownloadURL string `json:"download_url"`
+	}
+	if err := json.Unmarshal(resp.Bytes(), &dr); err != nil || dr.DownloadURL == "" {
+		return fmt.Errorf("no download_url in response")
+	}
+
+	c.logf("[image] 提取到图片直链: %s", dr.DownloadURL)
+
+	var imgResp *req.Response
+	var errFetch error
+
+	// 如果 DownloadURL 依然是 chatgpt.com 的内部地址（如 estuary/content），则必须携带原有的鉴权 Header（Bearer Token）
+	// 如果是外部 CDN 直链（如 files.oaiusercontent.com），则使用干净的客户端防止双重鉴权或跨域被拦截
+	isInternalURL := strings.Contains(dr.DownloadURL, "chatgpt.com")
+	
+	reqHeader := map[string]string{
+		"User-Agent": reqUserAgent,
+		"Accept":     "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+	}
+
+	if isInternalURL {
+		c.logf("[image] 内部链接，使用原生客户端进行代理")
+		imgResp, errFetch = c.httpClient.R().SetHeaders(reqHeader).Get(dr.DownloadURL)
+	} else {
+		c.logf("[image] 外部 CDN 链接，使用干净客户端进行代理")
+		cleanClient := req.C().ImpersonateChrome()
+		imgResp, errFetch = cleanClient.R().SetHeaders(reqHeader).Get(dr.DownloadURL)
+	}
+
+	if errFetch != nil {
+		return fmt.Errorf("proxy fetch image failed: %w", errFetch)
+	}
+	
+	if imgResp.IsErrorState() {
+		return fmt.Errorf("proxy fetch image returned error status: %d", imgResp.StatusCode)
+	}
+	
+	imgData := imgResp.Bytes()
+	contentType := imgResp.Header.Get("Content-Type")
+
+	if contentType != "" {
+		writer.Header()["Content-Type"] = []string{contentType}
+	}
+	writer.Header()["Cache-Control"] = []string{"public, max-age=31536000"} // 让浏览器永久缓存
+	
+	_, err = writer.Write(imgData)
+	if err != nil {
+		return fmt.Errorf("proxy write image failed: %w", err)
+	}
+	
+	c.logf("[image] 代理传输完毕, %d bytes", len(imgData))
+	return nil
+}
+
+// resolveFileDownloadURL 获取 files/download 直链。
+func (c *Client) resolveFileDownloadURL(fileID, conversationID string) (string, error) {
 	apiPath := fmt.Sprintf("/backend-api/files/download/%s?conversation_id=%s&inline=false", fileID, conversationID)
 	resp, err := c.httpClient.R().
 		SetHeaders(map[string]string{
@@ -159,30 +105,46 @@ func (c *Client) downloadImage(fileID, conversationID string) (string, error) {
 	if err != nil || resp.StatusCode != 200 {
 		return "", fmt.Errorf("download info failed: status=%d", resp.StatusCode)
 	}
-
 	var dr struct {
 		DownloadURL string `json:"download_url"`
 	}
 	if err := json.Unmarshal(resp.Bytes(), &dr); err != nil || dr.DownloadURL == "" {
 		return "", fmt.Errorf("no download_url in response")
 	}
+	return dr.DownloadURL, nil
+}
 
-	c.logf("[image] Found image: %s", fileID)
+func (c *Client) fetchURLBytes(downloadURL, reqUserAgent string) ([]byte, string, error) {
+	isInternal := strings.Contains(downloadURL, "chatgpt.com")
+	reqHeader := map[string]string{
+		"User-Agent": reqUserAgent,
+		"Accept":     "*/*",
+	}
+	var imgResp *req.Response
+	var errFetch error
+	if isInternal {
+		imgResp, errFetch = c.httpClient.R().SetHeaders(reqHeader).Get(downloadURL)
+	} else {
+		imgResp, errFetch = req.C().ImpersonateChrome().R().SetHeaders(reqHeader).Get(downloadURL)
+	}
+	if errFetch != nil {
+		return nil, "", errFetch
+	}
+	if imgResp.IsErrorState() {
+		return nil, "", fmt.Errorf("fetch %d", imgResp.StatusCode)
+	}
+	return imgResp.Bytes(), imgResp.Header.Get("Content-Type"), nil
+}
 
-	imgResp, err := c.httpClient.R().Get(dr.DownloadURL)
+// DownloadFileByFileID 下载生图/附件 file_id 对应二进制（供 base64 流式下发）。
+func (c *Client) DownloadFileByFileID(conversationID, fileID string) ([]byte, string, error) {
+	dl, err := c.resolveFileDownloadURL(fileID, conversationID)
 	if err != nil {
-		return "", fmt.Errorf("download image: %w", err)
+		return nil, "", err
 	}
-
-	imgData := imgResp.Bytes()
-	if len(imgData) < 1000 {
-		return "", fmt.Errorf("image too small: %d bytes", len(imgData))
+	ua := c.userAgent
+	if ua == "" {
+		ua = "Mozilla/5.0"
 	}
-
-	if err := os.WriteFile(fpath, imgData, 0644); err != nil {
-		return "", fmt.Errorf("save image: %w", err)
-	}
-
-	c.logf("[image] Saved: %s (%d KB)", fpath, len(imgData)/1024)
-	return fpath, nil
+	return c.fetchURLBytes(dl, ua)
 }
