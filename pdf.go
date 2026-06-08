@@ -1,9 +1,6 @@
 package sentinel
 
-
-
 import (
-
 	"encoding/json"
 
 	"fmt"
@@ -14,19 +11,12 @@ import (
 
 	"strings"
 
-
-
 	"github.com/imroc/req/v3"
-
 )
-
-
 
 // PDFArtifact 与 SandboxArtifact 同构（兼容旧字段名）。
 
 type PDFArtifact = SandboxArtifact
-
-
 
 func filterPDFArtifacts(arts []SandboxArtifact) []PDFArtifact {
 
@@ -46,8 +36,6 @@ func filterPDFArtifacts(arts []SandboxArtifact) []PDFArtifact {
 
 }
 
-
-
 func sandboxNames(arts []SandboxArtifact) []string {
 
 	names := make([]string, len(arts))
@@ -62,15 +50,11 @@ func sandboxNames(arts []SandboxArtifact) []string {
 
 }
 
-
-
 func pdfNames(pdfs []PDFArtifact) []string {
 
 	return sandboxNames(artsFromPDF(pdfs))
 
 }
-
-
 
 func artsFromPDF(pdfs []PDFArtifact) []SandboxArtifact {
 
@@ -86,8 +70,6 @@ func artsFromPDF(pdfs []PDFArtifact) []SandboxArtifact {
 
 }
 
-
-
 // resolvePDFDownloadURL 调用 interpreter/download 获取沙箱文件下载直链（pdf/txt 等）。
 
 func (c *Client) resolvePDFDownloadURL(conversationID, messageID, sandboxPath string) (string, error) {
@@ -96,26 +78,21 @@ func (c *Client) resolvePDFDownloadURL(conversationID, messageID, sandboxPath st
 
 	body := map[string]interface{}{
 
-		"message_id":   messageID,
+		"message_id": messageID,
 
 		"sandbox_path": sandboxPath,
-
 	}
 
 	resp, err := c.httpClient.R().
-
 		SetHeaders(map[string]string{
 
-			"Content-Type":          "application/json",
+			"Content-Type": "application/json",
 
-			"x-openai-target-path":  apiPath,
+			"x-openai-target-path": apiPath,
 
 			"x-openai-target-route": "/backend-api/conversation/{conversation_id}/interpreter/download",
-
 		}).
-
 		SetBody(body).
-
 		Post(apiPath)
 
 	if err != nil {
@@ -131,9 +108,7 @@ func (c *Client) resolvePDFDownloadURL(conversationID, messageID, sandboxPath st
 	}
 
 	var out struct {
-
 		DownloadURL string `json:"download_url"`
-
 	}
 
 	if err := json.Unmarshal(resp.Bytes(), &out); err != nil {
@@ -152,8 +127,6 @@ func (c *Client) resolvePDFDownloadURL(conversationID, messageID, sandboxPath st
 
 }
 
-
-
 // ProxyPDFBySandboxPath 代理下载沙箱文件并写入 ResponseWriter。
 
 func (c *Client) ProxyPDFBySandboxPath(conversationID, messageID, sandboxPath string, w interface{}, reqUserAgent string) error {
@@ -166,8 +139,6 @@ func (c *Client) ProxyPDFBySandboxPath(conversationID, messageID, sandboxPath st
 
 	}
 
-
-
 	downloadURL, err := c.resolvePDFDownloadURL(conversationID, messageID, sandboxPath)
 
 	if err != nil {
@@ -175,8 +146,6 @@ func (c *Client) ProxyPDFBySandboxPath(conversationID, messageID, sandboxPath st
 		return err
 
 	}
-
-
 
 	ua := reqUserAgent
 
@@ -187,9 +156,7 @@ func (c *Client) ProxyPDFBySandboxPath(conversationID, messageID, sandboxPath st
 	}
 
 	resp, err := req.C().R().
-
 		SetHeader("User-Agent", ua).
-
 		Get(downloadURL)
 
 	if err != nil {
@@ -203,8 +170,6 @@ func (c *Client) ProxyPDFBySandboxPath(conversationID, messageID, sandboxPath st
 		return fmt.Errorf("download file %d", resp.StatusCode)
 
 	}
-
-
 
 	data := resp.Bytes()
 
@@ -257,4 +222,3 @@ func encodeSandboxPathForQuery(sandboxPath string) string {
 	return url.QueryEscape(sandboxPath)
 
 }
-

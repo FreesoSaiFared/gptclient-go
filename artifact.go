@@ -23,8 +23,8 @@ const (
 	SignalSandboxPath      ArtifactSignalType = "sandbox_path"
 	SignalContentReference ArtifactSignalType = "content_reference"
 	SignalToolInvokedMeta  ArtifactSignalType = "tool_invoked_metadata" // server_ste_metadata
-	SignalTurnUseCase      ArtifactSignalType = "turn_use_case"           // server_ste_metadata.turn_use_case
-	SignalFileSearch       ArtifactSignalType = "file_search"             // 上传文件识图，非 DALL·E 生图
+	SignalTurnUseCase      ArtifactSignalType = "turn_use_case"         // server_ste_metadata.turn_use_case
+	SignalFileSearch       ArtifactSignalType = "file_search"           // 上传文件识图，非 DALL·E 生图
 )
 
 // ArtifactSignal 单条可观测信号。
@@ -348,11 +348,11 @@ func AnalyzeSignals(name string, signals []ArtifactSignal, plan ArtifactPlan) ma
 		byType[string(s.Type)] = append(byType[string(s.Type)], s.Value)
 	}
 	return map[string]interface{}{
-		"case":               name,
-		"signal_count":       len(signals),
-		"signals_by_type":    byType,
-		"plan":               plan,
-		"analyzed_at":        time.Now().Format(time.RFC3339),
+		"case":            name,
+		"signal_count":    len(signals),
+		"signals_by_type": byType,
+		"plan":            plan,
+		"analyzed_at":     time.Now().Format(time.RFC3339),
 	}
 }
 

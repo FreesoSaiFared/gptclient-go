@@ -12,14 +12,14 @@ import (
 // The conduit token is required for the main conversation request.
 //
 // Chrome DevTools Verification:
-//   1. Open chatgpt.com → F12 → Network tab
-//   2. Send a message and look for: f/conversation/prepare
-//   3. Verify request headers include:
-//      - x-conduit-token: no-token
-//      - x-oai-turn-trace-id: <uuid>
-//      - x-openai-target-path: /backend-api/f/conversation/prepare
-//   4. Verify request body structure matches below
-//   5. Check response contains: {"status":"success", "conduit_token":"..."}
+//  1. Open chatgpt.com → F12 → Network tab
+//  2. Send a message and look for: f/conversation/prepare
+//  3. Verify request headers include:
+//     - x-conduit-token: no-token
+//     - x-oai-turn-trace-id: <uuid>
+//     - x-openai-target-path: /backend-api/f/conversation/prepare
+//  4. Verify request body structure matches below
+//  5. Check response contains: {"status":"success", "conduit_token":"..."}
 //
 // What Might Change:
 //   - Endpoint path: /backend-api/f/conversation/prepare → /backend-api/v2/prepare
@@ -33,12 +33,13 @@ import (
 //   - Compare request body structure with baseline
 //
 // Detection with Mitmproxy:
-//   ```python
-//   def request(flow: http.HTTPFlow):
-//       if "f/conversation/prepare" in flow.request.path:
-//           # Log request for comparison
-//           ctx.log.info(f"Prepare request: {flow.request.text}")
-//   ```
+//
+//	```python
+//	def request(flow: http.HTTPFlow):
+//	    if "f/conversation/prepare" in flow.request.path:
+//	        # Log request for comparison
+//	        ctx.log.info(f"Prepare request: {flow.request.text}")
+//	```
 func (c *Client) getConduitToken(model, turnTraceID, partialText string) (string, error) {
 	if partialText == "" {
 		partialText = "h"
@@ -103,12 +104,12 @@ func (c *Client) getConduitToken(model, turnTraceID, partialText string) (string
 // The sentinel token is the primary authentication token for conversations.
 //
 // Chrome DevTools Verification:
-//   1. Look for: sentinel/chat-requirements/prepare
-//   2. Verify request body has: {"p": "gAAAAAC<base64>"}
-//   3. Decode the base64 to verify fingerprint config array structure
-//   4. Check response for proofofwork.required: true/false
-//   5. If PoW required, look for sentinel/chat-requirements/finalize
-//   6. Verify final response contains: {"token":"<sentinel_token>", "expire_after":300}
+//  1. Look for: sentinel/chat-requirements/prepare
+//  2. Verify request body has: {"p": "gAAAAAC<base64>"}
+//  3. Decode the base64 to verify fingerprint config array structure
+//  4. Check response for proofofwork.required: true/false
+//  5. If PoW required, look for sentinel/chat-requirements/finalize
+//  6. Verify final response contains: {"token":"<sentinel_token>", "expire_after":300}
 //
 // What Might Change:
 //   - PoW algorithm: FNV-1a hash → SHA-256, xxHash
@@ -125,16 +126,17 @@ func (c *Client) getConduitToken(model, turnTraceID, partialText string) (string
 //   - Set up alert for new PoW difficulty levels
 //
 // Detection with Mitmproxy:
-//   ```python
-//   def response(flow: http.HTTPFlow):
-//       if "sentinel/prepare" in flow.request.path:
-//           response = json.loads(flow.response.text)
-//           # Check for PoW changes
-//           if "proofofwork" in response:
-//               pow_data = response["proofofwork"]
-//               ctx.log.info(f"PoW difficulty: {pow_data.get('difficulty')}")
-//               ctx.log.info(f"PoW seed: {pow_data.get('seed')}")
-//   ```
+//
+//	```python
+//	def response(flow: http.HTTPFlow):
+//	    if "sentinel/prepare" in flow.request.path:
+//	        response = json.loads(flow.response.text)
+//	        # Check for PoW changes
+//	        if "proofofwork" in response:
+//	            pow_data = response["proofofwork"]
+//	            ctx.log.info(f"PoW difficulty: {pow_data.get('difficulty')}")
+//	            ctx.log.info(f"PoW seed: {pow_data.get('seed')}")
+//	```
 func (c *Client) getSentinelToken() (sentinelToken, proofToken string, err error) {
 	reqToken := NewPOWConfig(c.userAgent).RequirementsToken()
 

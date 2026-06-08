@@ -2,13 +2,13 @@
 //
 // chatgpt.com sentinel 使用两种 POW token:
 //
-//   1. RequirementsToken  → 客户端主动生成,塞进 /sentinel/chat-requirements
-//      请求体的 `p` 字段。前缀 "gAAAAAC"。固定难度 "0fffff"。
-//      config 是 18 元素数组,迭代 config[3] 与 config[9]。
+//  1. RequirementsToken  → 客户端主动生成,塞进 /sentinel/chat-requirements
+//     请求体的 `p` 字段。前缀 "gAAAAAC"。固定难度 "0fffff"。
+//     config 是 18 元素数组,迭代 config[3] 与 config[9]。
 //
-//   2. ProofToken         → 服务端返回 `proofofwork.required=true` + seed + difficulty,
-//      客户端本地求解后放进 Header `openai-sentinel-proof-token`。
-//      前缀 "gAAAAAB"。config 是 13 元素数组,只迭代 config[3]。
+//  2. ProofToken         → 服务端返回 `proofofwork.required=true` + seed + difficulty,
+//     客户端本地求解后放进 Header `openai-sentinel-proof-token`。
+//     前缀 "gAAAAAB"。config 是 13 元素数组,只迭代 config[3]。
 //
 // 两者共享同一个判定函数:SHA3-512(seed + base64(config_json)) 的前 N 字节
 // 按字节序 <= bytes.fromhex(difficulty)。若不满足则 config[3] += 1 重试。
@@ -98,23 +98,23 @@ func NewPOWConfig(userAgent string) *POWConfig {
 	c := &POWConfig{userAgent: userAgent}
 	c.arr = [18]interface{}{
 		powCores[rng.Intn(len(powCores))] + powScreens[rng.Intn(len(powScreens))], // 0
-		timeStr,                 // 1
-		nil,                     // 2
-		rng.Float64(),           // 3 - 迭代会覆盖
-		userAgent,               // 4
-		nil,                     // 5
+		timeStr,       // 1
+		nil,           // 2
+		rng.Float64(), // 3 - 迭代会覆盖
+		userAgent,     // 4
+		nil,           // 5
 		"dpl=1440a687921de39ff5ee56b92807faaadce73f13", // 6
-		"en-US",             // 7
-		"en-US,zh-CN",       // 8
-		0,                   // 9 - 迭代会覆盖
+		"en-US",                               // 7
+		"en-US,zh-CN",                         // 8
+		0,                                     // 9 - 迭代会覆盖
 		powNavKeys[rng.Intn(len(powNavKeys))], // 10
-		"location",          // 11
+		"location",                            // 11
 		powWinKeys[rng.Intn(len(powWinKeys))], // 12
-		perf,                // 13
-		randomUUID(rng),     // 14
-		"",                  // 15
-		8,                   // 16
-		now.Unix(),          // 17
+		perf,                                  // 13
+		randomUUID(rng),                       // 14
+		"",                                    // 15
+		8,                                     // 16
+		now.Unix(),                            // 17
 	}
 	return c
 }

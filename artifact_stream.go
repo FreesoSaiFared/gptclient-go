@@ -176,13 +176,13 @@ func (c *Client) emitArtifactBytes(cfg ArtifactStreamConfig, meta StreamEvent, d
 	if len(data) == 0 {
 		cfg.emit(meta)
 		cfg.emit(StreamEvent{
-			Event:      StreamEventArtifactDone,
-			Kind:       meta.Kind,
-			Index:      meta.Index,
-			FileID:     meta.FileID,
-			MessageID:  meta.MessageID,
+			Event:       StreamEventArtifactDone,
+			Kind:        meta.Kind,
+			Index:       meta.Index,
+			FileID:      meta.FileID,
+			MessageID:   meta.MessageID,
 			SandboxPath: meta.SandboxPath,
-			SizeBytes:  0,
+			SizeBytes:   0,
 		})
 		return
 	}

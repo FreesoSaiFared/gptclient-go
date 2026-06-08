@@ -34,21 +34,21 @@ type ServerConfig struct {
 	TokenRefreshAheadSec int
 
 	// Local config fallback (non-upstream)
-	ConfigPath            string // config.json path for fallback
-	FallbackBearerToken   string // Bearer token extracted from config.json
-	FallbackCookieString  string // Cookie string from config.json
+	ConfigPath           string // config.json path for fallback
+	FallbackBearerToken  string // Bearer token extracted from config.json
+	FallbackCookieString string // Cookie string from config.json
 }
 
 // LoadConfig 从环境变量加载配置
 func LoadConfig() ServerConfig {
 	return ServerConfig{
-		Port:              getEnv("PORT", "5005"),
-		Authorization:     getEnv("AUTHORIZATION", ""),
-		DefaultModel:      getEnv("DEFAULT_MODEL", "gpt-5-5-thinking"),
-		TempMode:          getEnvBool("TEMP_MODE", false),
-		ImageDir:          getEnv("IMAGE_DIR", "images"),
-		TokensFile:        getEnv("TOKENS_FILE", "tokens.json"),
-		SessionTTLMinutes: getEnvInt("SESSION_TTL_MINUTES", 120),
+		Port:                 getEnv("PORT", "5005"),
+		Authorization:        getEnv("AUTHORIZATION", ""),
+		DefaultModel:         getEnv("DEFAULT_MODEL", "gpt-5-5-thinking"),
+		TempMode:             getEnvBool("TEMP_MODE", false),
+		ImageDir:             getEnv("IMAGE_DIR", "images"),
+		TokensFile:           getEnv("TOKENS_FILE", "tokens.json"),
+		SessionTTLMinutes:    getEnvInt("SESSION_TTL_MINUTES", 120),
 		BaseURL:              getEnv("BASE_URL", ""),
 		TokenRefreshAheadSec: getEnvInt("TOKEN_REFRESH_AHEAD_SEC", 300),
 	}

@@ -51,7 +51,7 @@ func (c *Client) ProxyImageByFileID(fileID, conversationID string, w interface{}
 	// 如果 DownloadURL 依然是 chatgpt.com 的内部地址（如 estuary/content），则必须携带原有的鉴权 Header（Bearer Token）
 	// 如果是外部 CDN 直链（如 files.oaiusercontent.com），则使用干净的客户端防止双重鉴权或跨域被拦截
 	isInternalURL := strings.Contains(dr.DownloadURL, "chatgpt.com")
-	
+
 	reqHeader := map[string]string{
 		"User-Agent": reqUserAgent,
 		"Accept":     "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
@@ -69,11 +69,11 @@ func (c *Client) ProxyImageByFileID(fileID, conversationID string, w interface{}
 	if errFetch != nil {
 		return fmt.Errorf("proxy fetch image failed: %w", errFetch)
 	}
-	
+
 	if imgResp.IsErrorState() {
 		return fmt.Errorf("proxy fetch image returned error status: %d", imgResp.StatusCode)
 	}
-	
+
 	imgData := imgResp.Bytes()
 	contentType := imgResp.Header.Get("Content-Type")
 
@@ -81,12 +81,12 @@ func (c *Client) ProxyImageByFileID(fileID, conversationID string, w interface{}
 		writer.Header()["Content-Type"] = []string{contentType}
 	}
 	writer.Header()["Cache-Control"] = []string{"public, max-age=31536000"} // 让浏览器永久缓存
-	
+
 	_, err = writer.Write(imgData)
 	if err != nil {
 		return fmt.Errorf("proxy write image failed: %w", err)
 	}
-	
+
 	c.logf("[image] 代理传输完毕, %d bytes", len(imgData))
 	return nil
 }

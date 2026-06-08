@@ -18,11 +18,11 @@ import (
 type ImageAspectRatio string
 
 const (
-	ImageAspectAuto      ImageAspectRatio = ""      // 自动（默认）
-	ImageAspectSquare    ImageAspectRatio = "1:1"   // 方形
-	ImageAspectPortrait  ImageAspectRatio = "3:4"   // 竖版
-	ImageAspectStory     ImageAspectRatio = "9:16"  // 故事版
-	ImageAspectLandscape ImageAspectRatio = "4:3"   // 横版
+	ImageAspectAuto       ImageAspectRatio = ""     // 自动（默认）
+	ImageAspectSquare     ImageAspectRatio = "1:1"  // 方形
+	ImageAspectPortrait   ImageAspectRatio = "3:4"  // 竖版
+	ImageAspectStory      ImageAspectRatio = "9:16" // 故事版
+	ImageAspectLandscape  ImageAspectRatio = "4:3"  // 横版
 	ImageAspectWidescreen ImageAspectRatio = "16:9" // 宽屏
 )
 
@@ -1184,10 +1184,11 @@ func (c *Client) emitBodyFull(result *ChatResult, lastText *string, text, channe
 
 // processDeltaSSE 处理 delta 编码模式的 SSE 事件
 // ChatGPT delta 格式有多种变体：
-//  A) 顶层 patch：{"p":"/message/content/parts/0","o":"append","v":"text"}
-//  B) 简写 append：{"v":"text"}（省略 p/o，隐含对 parts/0 的追加）
-//  C) 消息对象 add：{"p":"","o":"add","v":{"message":{...}}}
-//  D) 完成 patch 数组：{"p":"","o":"patch","v":[...patches...]}
+//
+//	A) 顶层 patch：{"p":"/message/content/parts/0","o":"append","v":"text"}
+//	B) 简写 append：{"v":"text"}（省略 p/o，隐含对 parts/0 的追加）
+//	C) 消息对象 add：{"p":"","o":"add","v":{"message":{...}}}
+//	D) 完成 patch 数组：{"p":"","o":"patch","v":[...patches...]}
 func (c *Client) processDeltaSSE(evt map[string]interface{}, result *ChatResult, lastText *string, handler StreamHandler) {
 	pPath, _ := evt["p"].(string)
 	pOp, _ := evt["o"].(string)
@@ -1388,7 +1389,6 @@ func (c *Client) processFullSSE(evt map[string]interface{}, result *ChatResult, 
 		}
 	}
 }
-
 
 // fetchTextdocs 调用 textdocs API 获取思考步骤的详细内容
 // textdocs 返回一个对象数组，每个对象包含 type、thought（含 summary/content）等字段

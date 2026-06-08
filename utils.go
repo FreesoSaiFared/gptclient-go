@@ -21,8 +21,6 @@ func perfNowMs(start time.Time) float64 {
 	return float64(time.Since(start).Microseconds()) / 1000.0
 }
 
-
-
 func truncateStr(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s

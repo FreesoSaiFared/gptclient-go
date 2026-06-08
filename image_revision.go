@@ -14,13 +14,13 @@ const (
 
 // GeneratedImageSlot 一个「图位」（图1/图2…）及其修订历史。
 type GeneratedImageSlot struct {
-	SlotIndex  int
-	GenID      string
-	MessageID  string
-	FileID     string
-	Revision   int
+	SlotIndex   int
+	GenID       string
+	MessageID   string
+	FileID      string
+	Revision    int
 	FileHistory []string
-	Final      bool
+	Final       bool
 }
 
 // StreamEvent 扩展字段见 stream_events.go（SlotIndex、Revision、GenID 等）。
@@ -194,14 +194,14 @@ func (c *Client) noteGeneratedImageRevision(result *ChatResult, opts ChatOptions
 	case ImageRevisionLatestPerSlot:
 		if prevFileID != "" && prevFileID != p.FileID {
 			sup := StreamEvent{
-				Event:       StreamEventArtifactSuperseded,
-				Kind:        "generated_image",
-				SlotIndex:   slot.SlotIndex,
-				Revision:    slot.Revision - 1,
-				GenID:       slot.GenID,
-				MessageID:   slot.MessageID,
-				FileID:      prevFileID,
-				UpdateType:  wsUpdateType,
+				Event:      StreamEventArtifactSuperseded,
+				Kind:       "generated_image",
+				SlotIndex:  slot.SlotIndex,
+				Revision:   slot.Revision - 1,
+				GenID:      slot.GenID,
+				MessageID:  slot.MessageID,
+				FileID:     prevFileID,
+				UpdateType: wsUpdateType,
 			}
 			if cfg.BuildImageURL != nil {
 				sup.URL = cfg.BuildImageURL(prevFileID)
@@ -271,15 +271,15 @@ func (c *Client) FinalizeImageGenSlots(result *ChatResult, opts ChatOptions) {
 		slot.Final = true
 		if mode != ImageRevisionFinalOnly {
 			cfg.emit(StreamEvent{
-				Event:       StreamEventArtifactSlotFinal,
-				Kind:        "generated_image",
-				SlotIndex:   slot.SlotIndex,
-				Revision:    slot.Revision,
-				GenID:       slot.GenID,
-				MessageID:   slot.MessageID,
-				FileID:      slot.FileID,
-				IsFinal:     true,
-				Total:       len(result.imageSlots),
+				Event:     StreamEventArtifactSlotFinal,
+				Kind:      "generated_image",
+				SlotIndex: slot.SlotIndex,
+				Revision:  slot.Revision,
+				GenID:     slot.GenID,
+				MessageID: slot.MessageID,
+				FileID:    slot.FileID,
+				IsFinal:   true,
+				Total:     len(result.imageSlots),
 			})
 			continue
 		}

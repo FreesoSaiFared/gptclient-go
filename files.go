@@ -24,10 +24,10 @@ type UploadedFile struct {
 	FileName    string `json:"file_name"`
 	FileSize    int    `json:"file_size"`
 	MimeType    string `json:"mime_type"`
-	UseCase     string `json:"use_case"`          // 图片: multimodal, 文件: my_files
-	Width       int    `json:"width,omitempty"`   // 仅图片
-	Height      int    `json:"height,omitempty"`  // 仅图片
-	DownloadURL string `json:"download_url"`      // POST /uploaded 返回,通常不直接用
+	UseCase     string `json:"use_case"`         // 图片: multimodal, 文件: my_files
+	Width       int    `json:"width,omitempty"`  // 仅图片
+	Height      int    `json:"height,omitempty"` // 仅图片
+	DownloadURL string `json:"download_url"`     // POST /uploaded 返回,通常不直接用
 }
 
 // UploadFile 执行完整三步上传。
