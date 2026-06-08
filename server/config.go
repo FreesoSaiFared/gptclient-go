@@ -32,6 +32,11 @@ type ServerConfig struct {
 
 	// Session Token 自动刷新：在 AT 过期前多少秒提前用 ST 换 AT，默认 300
 	TokenRefreshAheadSec int
+
+	// Local config fallback (non-upstream)
+	ConfigPath            string // config.json path for fallback
+	FallbackBearerToken   string // Bearer token extracted from config.json
+	FallbackCookieString  string // Cookie string from config.json
 }
 
 // LoadConfig 从环境变量加载配置

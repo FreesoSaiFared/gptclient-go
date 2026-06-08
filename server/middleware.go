@@ -25,15 +25,33 @@ func CORSMiddleware() gin.HandlerFunc {
 // AuthMiddleware 鉴权中间件
 // 若配置了 AUTHORIZATION 环境变量，则验证请求头中的 Bearer Token 是否匹配
 // 若未配置，则跳过鉴权（直接将 Bearer Token 视为 ChatGPT token）
+// 若配置了 FallbackBearerToken，则支持 dummy keys (sk-sentinel-local, sk-dummy) for config-based auth
 func AuthMiddleware(cfg *ServerConfig, pool *TokenPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// 从请求头提取 Bearer Token（兼容 "Bearer eyJ..." 和 "Bearer" 无空格两种情况）
 		auth := c.GetHeader("Authorization")
-		// 先去掉 "Bearer "（有空格），再去掉 "Bearer"（无空格），最后 TrimSpace
 		token := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(auth, "Bearer "), "Bearer"))
 		token = cleanToken(token)
 
-		// 允许“免密模式”或“密码匹配模式”：
+		// Check for dummy key fallback
+		if (token == "sk-sentinel-local" || token == "sk-dummy" || token == "") && cfg.FallbackBearerToken != "" {
+			if cfg.Authorization != "" && token != "" && token != cfg.Authorization {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
+					Error: ErrorDetail{
+						Message: "Invalid API key",
+						Type:    "invalid_request_error",
+						Code:    "invalid_api_key",
+					},
+				})
+				return
+			}
+			c.Set("chatgpt_token", cfg.FallbackBearerToken)
+			c.Set("from_pool", false)
+			c.Set("from_config_fallback", true)
+			c.Next()
+			return
+		}
+
+		// 允许"免密模式"或"密码匹配模式"：
 		// - 如果传入的 token 就是我们配置的 AUTHORIZATION 密码
 		// - 如果传入的 token 为空，且我们没有配置密码（完全开放给本地使用）
 		if (cfg.Authorization != "" && token == cfg.Authorization) || (cfg.Authorization == "" && token == "") {
@@ -57,16 +75,6 @@ func AuthMiddleware(cfg *ServerConfig, pool *TokenPool) gin.HandlerFunc {
 					Message: "Invalid API key",
 					Type:    "invalid_request_error",
 					Code:    "invalid_api_key",
-				},
-			})
-			return
-		} else if token == "" {
-			// 这种情况只有一种：配了密码，但是 token 为空，此时应该提示需要鉴权
-			c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
-				Error: ErrorDetail{
-					Message: "Missing Authorization header",
-					Type:    "invalid_request_error",
-					Code:    "missing_auth",
 				},
 			})
 			return

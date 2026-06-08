@@ -63,13 +63,21 @@ func (sm *SessionManager) GetOrCreate(convID, token string) *sessionEntry {
 	}
 
 	// 新建 Client
-	client := sentinel.NewClient(sentinel.Config{
+	clientCfg := sentinel.Config{
 		BearerToken: token,
 		Model:       sm.cfg.DefaultModel,
 		TempMode:    sm.cfg.TempMode,
 		ImageDir:    sm.cfg.ImageDir,
-	})
-	// 启用自动图片下载阻塞，确保 Web UI 能够获取并渲染图片
+	}
+	// Local config fallback: pass cookie string for browser session
+	if sm.cfg.FallbackCookieString != "" {
+		clientCfg.CookieString = sm.cfg.FallbackCookieString
+	}
+	// Local config fallback: pass BaseURL
+	if sm.cfg.BaseURL != "" {
+		clientCfg.BaseURL = sm.cfg.BaseURL
+	}
+	client := sentinel.NewClient(clientCfg)
 	client.SetDisableAutoImage(false)
 
 	entry := &sessionEntry{
@@ -77,8 +85,6 @@ func (sm *SessionManager) GetOrCreate(convID, token string) *sessionEntry {
 		lastUsed: time.Now(),
 		token:    token,
 	}
-	// 注意：此时 convID 可能为空，新对话的 conversationID 要等第一轮结束后才知道
-	// 见 handler_chat.go 中在对话完成后调用 sm.Register()
 	return entry
 }
 
