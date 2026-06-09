@@ -29,12 +29,22 @@ func CORSMiddleware() gin.HandlerFunc {
 func AuthMiddleware(cfg *ServerConfig, pool *TokenPool) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		auth := c.GetHeader("Authorization")
-		token := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(auth, "Bearer "), "Bearer"))
-		token = cleanToken(token)
+		rawToken := strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(auth, "Bearer "), "Bearer"))
 
-		// Check for dummy key fallback
-		if (token == "sk-sentinel-local" || token == "sk-dummy" || token == "") && cfg.FallbackBearerToken != "" {
-			if cfg.Authorization != "" && token != "" && token != cfg.Authorization {
+		// When AUTHORIZATION is configured, check raw token match first (before cleanToken filters non-JWT)
+		if cfg.Authorization != "" {
+			if rawToken == "" {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
+					Error: ErrorDetail{
+						Message: "Missing Authorization header",
+						Type:    "invalid_request_error",
+						Code:    "missing_auth",
+					},
+				})
+				return
+			}
+			// sk-dummy/sk-sentinel-local are not valid API keys
+			if rawToken == "sk-sentinel-local" || rawToken == "sk-dummy" {
 				c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
 					Error: ErrorDetail{
 						Message: "Invalid API key",
@@ -44,6 +54,48 @@ func AuthMiddleware(cfg *ServerConfig, pool *TokenPool) gin.HandlerFunc {
 				})
 				return
 			}
+			// Token must match the configured API key
+			if rawToken != cfg.Authorization {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
+					Error: ErrorDetail{
+						Message: "Invalid API key",
+						Type:    "invalid_request_error",
+						Code:    "invalid_api_key",
+					},
+				})
+				return
+			}
+			// Token matches AUTHORIZATION - try pool first
+			chatgptToken, ok := pool.Pick()
+			if !ok {
+				// Pool empty, try config fallback
+				if cfg.FallbackBearerToken != "" {
+					c.Set("chatgpt_token", cfg.FallbackBearerToken)
+					c.Set("from_pool", false)
+					c.Set("from_config_fallback", true)
+					c.Next()
+					return
+				}
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, ErrorResponse{
+					Error: ErrorDetail{
+						Message: "Token pool is empty. Please upload tokens or provide one in the request.",
+						Type:    "server_error",
+						Code:    "no_token",
+					},
+				})
+				return
+			}
+			c.Set("chatgpt_token", chatgptToken)
+			c.Set("from_pool", true)
+			c.Next()
+			return
+		}
+
+		// AUTHORIZATION not configured - local development mode
+		token := cleanToken(rawToken)
+
+		// Check for dummy key fallback (only when FallbackBearerToken available)
+		if (rawToken == "sk-sentinel-local" || rawToken == "sk-dummy" || token == "") && cfg.FallbackBearerToken != "" {
 			c.Set("chatgpt_token", cfg.FallbackBearerToken)
 			c.Set("from_pool", false)
 			c.Set("from_config_fallback", true)
@@ -51,10 +103,8 @@ func AuthMiddleware(cfg *ServerConfig, pool *TokenPool) gin.HandlerFunc {
 			return
 		}
 
-		// 允许"免密模式"或"密码匹配模式"：
-		// - 如果传入的 token 就是我们配置的 AUTHORIZATION 密码
-		// - 如果传入的 token 为空，且我们没有配置密码（完全开放给本地使用）
-		if (cfg.Authorization != "" && token == cfg.Authorization) || (cfg.Authorization == "" && token == "") {
+		// Empty token with no fallback and no authorization = use pool
+		if token == "" {
 			chatgptToken, ok := pool.Pick()
 			if !ok {
 				c.AbortWithStatusJSON(http.StatusServiceUnavailable, ErrorResponse{
@@ -68,22 +118,13 @@ func AuthMiddleware(cfg *ServerConfig, pool *TokenPool) gin.HandlerFunc {
 			}
 			c.Set("chatgpt_token", chatgptToken)
 			c.Set("from_pool", true)
-		} else if cfg.Authorization != "" && token != "" {
-			// 如果配置了密码，且传入了密码，但不匹配
-			c.AbortWithStatusJSON(http.StatusUnauthorized, ErrorResponse{
-				Error: ErrorDetail{
-					Message: "Invalid API key",
-					Type:    "invalid_request_error",
-					Code:    "invalid_api_key",
-				},
-			})
+			c.Next()
 			return
-		} else {
-			// 未配置 AUTHORIZATION，且传入了 token，直接将 token 作为 ChatGPT Bearer token 透传
-			c.Set("chatgpt_token", token)
-			c.Set("from_pool", false)
 		}
 
+		// Pass through real ChatGPT JWT token
+		c.Set("chatgpt_token", token)
+		c.Set("from_pool", false)
 		c.Next()
 	}
 }

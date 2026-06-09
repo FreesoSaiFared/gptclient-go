@@ -297,9 +297,13 @@ func ExtractBrowserCookies(ctx context.Context, src CookieSourceConfig) ([]Cooki
 	switch browser {
 	case "firefox":
 		return extractFirefoxCookies(ctx, src.Profile)
-	case "chrome", "chromium", "brave", "edge", "opera", "vivaldi":
+	case "chrome", "chrome-canary", "chrome-unstable", "chrome-beta", "chrome-for-testing", "chromium", "brave", "edge", "opera", "vivaldi":
 		// Resolve keyring password for v11 cookie decryption
-		keyringPass, err := getLinuxKeyringPassword(browser)
+		keyringName := browser
+		if strings.HasPrefix(browser, "chrome-") {
+			keyringName = "chrome"
+		}
+		keyringPass, err := getLinuxKeyringPassword(keyringName)
 		if err != nil {
 			keyringPass = "" // Fall back to empty; v11 decryption will fail gracefully
 		}
@@ -307,7 +311,7 @@ func ExtractBrowserCookies(ctx context.Context, src CookieSourceConfig) ([]Cooki
 	case "safari":
 		return nil, fmt.Errorf("safari cookie extraction is not implemented in this Go port")
 	default:
-		return nil, fmt.Errorf("unknown browser: %s (supported: firefox, chrome, chromium, brave, edge, opera, vivaldi)", src.Browser)
+		return nil, fmt.Errorf("unknown browser: %s (supported: firefox, chrome, chrome-canary, chrome-unstable, chrome-beta, chrome-for-testing, chromium, brave, edge, opera, vivaldi)", src.Browser)
 	}
 }
 
@@ -420,12 +424,16 @@ func readFirefoxCookies(dbPath string) ([]CookieRecord, error) {
 // --- Chromium ---
 
 var chromiumBrowserDirs = map[string]string{
-	"chrome":   "google-chrome",
-	"chromium": "chromium",
-	"brave":    "BraveSoftware/Brave-Browser",
-	"edge":     "microsoft-edge",
-	"opera":    "opera",
-	"vivaldi":  "vivaldi",
+	"chrome":             "google-chrome",
+	"chrome-canary":      "google-chrome-canary",
+	"chrome-unstable":    "google-chrome-unstable",
+	"chrome-beta":        "google-chrome-beta",
+	"chrome-for-testing": "google-chrome-for-testing",
+	"chromium":           "chromium",
+	"brave":              "BraveSoftware/Brave-Browser",
+	"edge":               "microsoft-edge",
+	"opera":              "opera",
+	"vivaldi":            "vivaldi",
 }
 
 func extractChromiumCookies(ctx context.Context, browser, profile, keyringPass string) ([]CookieRecord, error) {
@@ -975,7 +983,7 @@ type BrowserProbeResult struct {
 // ProbeAllBrowsers probes all known browsers for chatgpt.com cookies
 // and returns results for each. This does NOT modify any files.
 func ProbeAllBrowsers(ctx context.Context) []BrowserProbeResult {
-	browsers := []string{"chrome", "chromium", "brave", "firefox", "edge", "opera", "vivaldi"}
+	browsers := []string{"chrome", "chrome-canary", "chrome-unstable", "chrome-beta", "chrome-for-testing", "chromium", "brave", "firefox", "edge", "opera", "vivaldi"}
 	var results []BrowserProbeResult
 	for _, b := range browsers {
 		results = append(results, ProbeBrowser(ctx, b, ""))
