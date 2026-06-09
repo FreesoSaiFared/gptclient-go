@@ -360,3 +360,13 @@ images/
 ## License
 
 MIT
+
+---
+
+## Platform Support
+
+- **Linux**: Full local workflow including browser-cookie extraction and systemd service scripts.
+- **Windows**: Server, chat, and token-pool components build successfully. Automatic browser-cookie extraction is incomplete; use `config.json`, `tokens.json`, or manual cookies instead.
+- **macOS**: Builds are supported, but browser-cookie extraction may require additional setup.
+
+Systemd scripts (`/scripts/*.sh`) are Linux-only.
